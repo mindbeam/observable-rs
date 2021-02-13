@@ -5,7 +5,7 @@ pub trait Observe<T>: Sized {
     fn subscribe(&self, cb: Box<dyn Fn()>);
 }
 
-enum Listener {
+pub enum Listener {
     Once(Box<dyn FnMut()>),
     Durable(Rc<RefCell<Box<dyn FnMut()>>>),
 }
@@ -28,13 +28,16 @@ impl<T> Observable<T> {
         self.value.borrow()
     }
 
-    // TODO 4 - fn mutate, returning changed: bool
+    // TODO fn mutate, returning changed: bool
 
     pub fn set(&self, value: T) {
         {
             *(self.value.borrow_mut()) = value;
         };
 
+        self.notify();
+    }
+    fn notify(&self) {
         let mut working_set: Vec<Listener>;
         {
             if let Some(ref mut listeners) = *self.listeners.borrow_mut() {
@@ -98,16 +101,18 @@ impl<T> Observable<T> {
     }
 }
 
-impl Default for Observable<bool> {
-    fn default() -> Self {
-        Observable::new(false)
-    }
-}
-impl<T> Default for Observable<Option<T>>
+impl<T> Default for Observable<T>
 where
     T: Default,
 {
     fn default() -> Self {
-        Observable::new(Default::default())
+        Observable::new(T::default())
+    }
+}
+
+impl<T> Observable<Vec<T>> {
+    pub fn push(&mut self, item: T) {
+        self.value.borrow_mut().push(item);
+        self.notify();
     }
 }

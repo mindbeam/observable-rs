@@ -5,7 +5,7 @@
 //! ```
 
 /// Public API.
-pub mod observable;
+mod observable;
 
 // Reexport of the public API.
 #[doc(inline)]

@@ -4,27 +4,29 @@ import './App.css';
 function App({ wasm }) {
 
   let thing;
+  let the_list;
   useEffect(() => {
     thing = wasm.create_thing();
+
+    setInterval(() => {
+      thing.do_something();
+    }, 1000);
+
+    the_list = thing.get_the_list();
   }, [input]);
 
-  useObserve(thing);
+  // Bind this observable to the react component
+  useObserve(the_list);
 
   return (
     <div className="App">
       <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
+        The List:<br />
+        <ul>
+          {the_list.map(v => (
+            <li>{v}</li>
+          ))}
+        </ul>
       </header>
     </div>
   );

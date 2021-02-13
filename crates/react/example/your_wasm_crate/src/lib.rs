@@ -1,3 +1,5 @@
+use observable_react::ReactObservable;
+use observable_rs::Observable;
 use wasm_bindgen::prelude::*;
 
 #[allow(unused)]
@@ -20,6 +22,6 @@ impl RustThing {
         self.list.push(format!("Thing {}", self.things));
     }
     pub fn get_the_list(&self) -> ReactObservable {
-        Observable::new(vec![1u32, 2, 3]).into()
+        self.list.clone().into()
     }
 }
