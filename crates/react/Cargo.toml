@@ -1,0 +1,22 @@
+[package]
+name = "observable-react"
+version = "0.0.1"
+authors = ["Daniel Norman <daniel@danielnorman.net>"]
+edition = "2018"
+
+categories = ["wasm", "web-programming"]
+description = "observable-react enables react component bindings to rust components using WASM"
+exclude = [".github", "rustfmt.toml"]
+keywords = ["javascript", "html", "react", "observable"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/mindbeam/observable-rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wasm-bindgen = { version = "0.2" }
+wasm-bindgen-test = "0.3"
+js-sys="0.3"
+serde = {version = "1.0.105", features = ["derive"]}
+observable-rs = { path = "../observable", version = "0.0.1" }

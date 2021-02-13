@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/observable",
+    "crates/react",
+    "crates/react/example/your_wasm_crate"
+]
