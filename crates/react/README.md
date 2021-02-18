@@ -1,21 +1,21 @@
 
 
 # Example setup:
-```bash
-# Your rust WASM code
-cargo new --lib your_wasm_crate
-cd your_wasm_crate
-cargo add observable-react
-# Create your rust application logic
-# see contents of example/your_wasm_crate
-cd ..
-mkdir wasm_build_output;
+Follow setup instructions here to create a react app with wasm support:  
+https://dev.to/lokesh007/webassembly-with-rust-and-react-using-create-react-app-67  
+NOTES:  
+* Suggest you use the typescript flag when creating your react app:
+  `npx create-react-app your_react_app --template typescript`
+* Change .config-overrides.json `extraArgs: "--no-typescript"` to `extraArgs: ""`
+* your wasm build output dir (specified in config-overrides.json) must be inside or symlinked within your react app src directory in order to be bundled
 
-# Now create your react app
-npx create-react-app app
-cd app
- # Add rust build step to react app
-npm install react-app-rewired wasm-loader -D
-# copy config-overrides.js from example directory and modify based on your wasm path
+
+```bash
+# Your rust crate for application logic, to be compiled to WASM
+cd your_wasm_crate_dir
+
+# Add this crate
+cargo add observable-react
+cd your_react_webapp_dir
 npm serve
 ```

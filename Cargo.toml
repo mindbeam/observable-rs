@@ -2,5 +2,5 @@
 members = [
     "crates/observable",
     "crates/react",
-    "crates/react/example/your_wasm_crate"
+    "crates/react/example/your_react_app/your-app-specific-crate"
 ]

@@ -17,10 +17,9 @@ module.exports = function override(config, env) {
 
   config.plugins = (config.plugins || []).concat([
     new WasmPackPlugin({
-      crateDirectory: path.resolve(__dirname, "../your_wasm_crate"),
+      crateDirectory: path.resolve(__dirname, "./your-app-specific-crate"),
       extraArgs: "",
-
-      outDir: path.resolve(__dirname, "../wasm_build_output"),
+      outDir: path.resolve(__dirname, "./src/your-app-specific-crate-build"),
     }),
   ]);
 

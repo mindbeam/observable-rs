@@ -5,7 +5,7 @@ import App from './App';
 import reportWebVitals from './reportWebVitals';
 
 // Delay rendering of the app until we have the wasm loaded.
-import("./wasm_build_output").then((wasm) => {
+import("./your-app-specific-crate-build").then((wasm) => {
   ReactDOM.render(
     <React.StrictMode>
       <App wasm={wasm} />
@@ -13,8 +13,6 @@ import("./wasm_build_output").then((wasm) => {
     document.getElementById('root')
   );
 });
-
-
 
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))
