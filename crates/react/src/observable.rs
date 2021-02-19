@@ -48,7 +48,7 @@ impl ReactObservable {
         let obs = dyn_clone::clone_box(&*self.obs);
 
         let unsub = Closure::once_into_js(Box::new(move || {
-            log::info!("subscribe");
+            log::info!("unsubscribe");
 
             obs.unsubscribe(handle);
         }) as Box<dyn FnOnce()>);
