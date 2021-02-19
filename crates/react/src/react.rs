@@ -4,8 +4,6 @@ use js_sys::Function;
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::ReactObservable;
-
 #[wasm_bindgen(module = "react")]
 extern "C" {
     /// Binding to React.useState

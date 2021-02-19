@@ -1,6 +1,6 @@
 use dyn_clone::DynClone;
 use js_sys::Function;
-use observable_rs::{ListenerHandle, Observable, Observe, Set};
+use observable_rs::{ListenerHandle, Observable};
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 

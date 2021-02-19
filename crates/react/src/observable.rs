@@ -1,5 +1,3 @@
-use std::unimplemented;
-
 use crate::{react::ReactComponent, traits::JsObserve};
 use js_sys::Function;
 use observable_rs::ListenerHandle;

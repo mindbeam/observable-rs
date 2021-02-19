@@ -1,7 +1,5 @@
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
-use crate::{Observe, Set};
-
 struct ListenerSet {
     lastidx: usize,
     items: Vec<ListenerItem>,
