@@ -1,8 +1,9 @@
 [package]
 name = "observable-rs"
 version = "0.0.1"
-authors = ["Daniel Norman <daniel@danielnorman.net>"]
+authors = ["Mindbeam Research Inc"]
 edition = "2018"
 license = "MIT/Apache-2.0"
+description="A general purpose observable library"
 
 [dependencies]
