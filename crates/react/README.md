@@ -3,13 +3,12 @@ So you want to use wasm_bindgen to add rust to you existing React app, or you're
 
 There are lots of examples out there demonstrating WASM for computationally intensive workloads, but how do you hook into React component rendering?
 
-This crate 
-
+This crate wraps observable-rs, providing wasm_bindgen compatibility with React bindings
 
 # Example Usage
 ```javascript
 import React, { useMemo, useReducer } from "react";
-import { useObserve } from "observable-rs";
+import { useObserve } from "observable-rs"; 
 
 function App({ wasm }: { wasm: any }) {
   let [listVisible, toggleShow] = useReducer((show: boolean) => { return !show }, true);
@@ -72,3 +71,7 @@ cargo add observable-react
 cd your_react_app
 npm serve
 ```
+
+For a working example, see [example react app](https://github.com/mindbeam/observable-rs/tree/master/crates/react/example)
+
+NOTE: Because wasm_bindgen is not currently able to bundle javascript helper functions, you must install the following npm package in your react app [observable-rs](https://www.npmjs.com/package/observable-rs)
