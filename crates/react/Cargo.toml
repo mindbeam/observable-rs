@@ -20,3 +20,5 @@ wasm-bindgen-test = "0.3"
 js-sys="0.3"
 serde = {version = "1.0.105", features = ["derive"]}
 observable-rs = { path = "../observable", version = "0.0.1" }
+dyn-clone = "1.0"
+log = "0.4"

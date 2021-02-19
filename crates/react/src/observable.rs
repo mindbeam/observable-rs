@@ -1,49 +1,59 @@
+use std::unimplemented;
+
 use crate::{react::ReactComponent, traits::JsObserve};
 use js_sys::Function;
-use wasm_bindgen::prelude::*;
+use observable_rs::ListenerHandle;
+use wasm_bindgen::{prelude::*, JsCast};
 
-/// Wrapper around JsObserve to which provides React binding convenience methods
+/// # Wrapper around JsObserve to which provides React binding convenience methods
+/// The JsObserve trait, and this wrapper are necessary because wasm_bindgen cannot express generics at this time.
 #[wasm_bindgen]
-pub struct ReactObservable(Box<dyn JsObserve>);
+pub struct ReactObservable {
+    obs: Box<dyn JsObserve>,
+    bound_listener: Option<ListenerHandle>,
+}
 
 #[wasm_bindgen]
 impl ReactObservable {
     pub fn get(&self) -> JsValue {
-        self.0.get_js()
+        self.obs.get_js()
     }
     pub fn map(&self, cb: Function) -> JsValue {
-        self.0.map_js(cb)
+        self.obs.map_js(cb)
     }
-    pub fn bind_component(&self, component: ReactComponent) {
-        self.0
-            .subscribe_js(Box::new(move || component.forceUpdate()))
+    /// Bind this observable to a React component
+    pub fn bind_component(&mut self, component: ReactComponent) {
+        if let Some(_) = self.bound_listener {
+            panic!("Can only bind to one component at a time")
+        }
+
+        let handle = self
+            .obs
+            .subscribe(Box::new(move || component.forceUpdate()));
+
+        self.bound_listener = Some(handle);
     }
-    #[allow(non_snake_case)]
-    pub fn useObserve(&self) {
-        //     // let (ct, update) = crate::react::use_state(0u32);
+    pub fn unbind(&mut self) {
+        if let Some(handle) = self.bound_listener.take() {
+            self.obs.unsubscribe(handle);
+        }
+    }
+    pub fn subscribe(&mut self, cb: Function) -> Function {
+        log::info!("subscribe");
+        let handle = self.obs.subscribe(Box::new(move || {
+            cb.call0(&JsValue::UNDEFINED).unwrap();
+        }));
 
-        //     // // TODO 4 - using once has partly solved our duplicate binding problem,
-        //     // // insofar as duplicates will be cleared when the observable updates
-        //     // // Unfortunately there might be other triggers causing the functional
-        //     // // component to re-render, and thus we will still get duplicates unless
-        //     // // we implement some sort of explicit deduplication
-        //     // self.0.once_js(Box::new(move || {
-        //     //     update(ct + 1);
-        //     // }));
-        //     // self
+        // Make a copy that the closure can hold on to
+        let obs = dyn_clone::clone_box(&*self.obs);
 
-        //     // This is dumb. Increasinly not a fan of React hooks
-        let [_, forceUpdate] = crate::react::use_reducer(|x: u32| x + 1, 0);
-        //     crate::react::use_effect(
-        //         || {
-        //             let obs = self.clone();
-        //             self.subscribe(|| forceUpdate());
-        //             //     ||{
-        //             //  self.unsubscribe
-        //             //     }
-        //         },
-        //         [],
-        //     );
+        let unsub = Closure::once_into_js(Box::new(move || {
+            log::info!("subscribe");
+
+            obs.unsubscribe(handle);
+        }) as Box<dyn FnOnce()>);
+
+        unsub.unchecked_into()
     }
 }
 
@@ -52,6 +62,9 @@ where
     O: JsObserve + 'static + Sized,
 {
     fn from(obs: O) -> Self {
-        ReactObservable(Box::new(obs))
+        ReactObservable {
+            obs: Box::new(obs),
+            bound_listener: None,
+        }
     }
 }

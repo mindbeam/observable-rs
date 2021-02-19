@@ -1,58 +1,52 @@
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
-pub trait Observe<T>: Sized {
-    fn get(&self) -> Ref<T>;
-    fn subscribe(&self, cb: Box<dyn Fn()>);
+use crate::{Observe, Set};
+
+struct ListenerSet {
+    lastidx: usize,
+    items: Vec<ListenerItem>,
+}
+struct ListenerItem {
+    idx: usize,
+    listener: Listener,
 }
 
 pub enum Listener {
-    Once(Box<dyn FnMut()>),
-    Durable(Rc<RefCell<Box<dyn FnMut()>>>),
+    Once(Box<dyn Fn()>),
+    Durable(Rc<RefCell<Box<dyn Fn()>>>),
 }
+
+pub struct ListenerHandle(usize);
 
 #[derive(Clone)]
 pub struct Observable<T> {
     value: Rc<RefCell<T>>,
-    listeners: Rc<RefCell<Option<Vec<Listener>>>>,
+    listener_set: Rc<RefCell<Option<ListenerSet>>>,
 }
 
 impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: Rc::new(RefCell::new(value)),
-            listeners: Default::default(),
+            listener_set: Default::default(),
         }
-    }
-
-    pub fn get(&self) -> Ref<T> {
-        self.value.borrow()
-    }
-
-    // TODO fn mutate, returning changed: bool
-
-    pub fn set(&self, value: T) {
-        {
-            *(self.value.borrow_mut()) = value;
-        };
-
-        self.notify();
     }
     fn notify(&self) {
         let mut working_set: Vec<Listener>;
         {
-            if let Some(ref mut listeners) = *self.listeners.borrow_mut() {
+            if let Some(ref mut listenerset) = *self.listener_set.borrow_mut() {
                 // It's possible to add listeners while we are firing a listener
                 // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
 
-                working_set = Vec::with_capacity(listeners.len());
+                working_set = Vec::with_capacity(listenerset.items.len());
 
                 // Take all Listener::Once entries, and clone the others
                 let mut i = 0;
-                while i != listeners.len() {
-                    match listeners[i] {
+                while i != listenerset.items.len() {
+                    match listenerset.items[i].listener {
                         Listener::Once(_) => {
                             // Just take it
-                            working_set.push(listeners.remove(i));
+                            working_set.push(listenerset.items.remove(i).listener);
                         }
                         Listener::Durable(ref f) => {
                             working_set.push(Listener::Durable(f.clone()));
@@ -69,7 +63,7 @@ impl<T> Observable<T> {
         // We can also be confident that we won't call any listeners which were attached during our dispatch
         for listener in working_set {
             match listener {
-                Listener::Once(mut f) => f(),
+                Listener::Once(f) => f(),
                 Listener::Durable(f) => {
                     (f.borrow_mut())();
                 }
@@ -77,30 +71,70 @@ impl<T> Observable<T> {
         }
     }
 
-    pub fn subscribe(&self, cb: Box<dyn FnMut()>) {
-        let mut listeners = self.listeners.borrow_mut();
-
-        let listener = Listener::Durable(Rc::new(RefCell::new(cb)));
-        match *listeners {
-            Some(ref mut listeners) => {
-                listeners.push(listener);
+    fn _subscribe(&self, listener: Listener) -> ListenerHandle {
+        let mut listener_set = self.listener_set.borrow_mut();
+        match *listener_set {
+            Some(ref mut listener_set) => {
+                listener_set.lastidx += 1;
+                listener_set.items.push(ListenerItem {
+                    idx: listener_set.lastidx,
+                    listener,
+                });
+                ListenerHandle(listener_set.lastidx)
             }
-            None => *listeners = Some(vec![listener]),
+            None => {
+                *listener_set = Some(ListenerSet {
+                    lastidx: 0,
+                    items: vec![ListenerItem { idx: 0, listener }],
+                });
+
+                ListenerHandle(0)
+            }
         }
     }
-    pub fn once(&self, cb: Box<dyn FnMut()>) {
-        let mut listeners = self.listeners.borrow_mut();
+    // }
 
+    // impl<T> Set<T> for Observable<T> {
+    pub fn set(&self, value: T) {
+        {
+            *(self.value.borrow_mut()) = value;
+        };
+
+        self.notify();
+    }
+    // }
+    // impl<T> Observe<T> for Observable<T> {
+    pub fn get(&self) -> Ref<T> {
+        self.value.borrow()
+    }
+    pub fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
+        let listener = Listener::Durable(Rc::new(RefCell::new(cb)));
+        self._subscribe(listener)
+    }
+    pub fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
         let listener = Listener::Once(cb);
-        match *listeners {
-            Some(ref mut listeners) => {
-                listeners.push(listener);
+        self._subscribe(listener)
+    }
+
+    pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
+        let mut listener_set = self.listener_set.borrow_mut();
+        match *listener_set {
+            Some(ref mut listener_set) => {
+                match listener_set
+                    .items
+                    .binary_search_by(|probe| probe.idx.cmp(&handle.0))
+                {
+                    Ok(i) => {
+                        listener_set.items.remove(i);
+                        true
+                    }
+                    Err(_) => false,
+                }
             }
-            None => *listeners = Some(vec![listener]),
+            None => false,
         }
     }
 }
-
 impl<T> Default for Observable<T>
 where
     T: Default,

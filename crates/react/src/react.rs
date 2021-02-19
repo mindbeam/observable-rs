@@ -4,6 +4,8 @@ use js_sys::Function;
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::prelude::*;
 
+use crate::ReactObservable;
+
 #[wasm_bindgen(module = "react")]
 extern "C" {
     /// Binding to React.useState
@@ -73,27 +75,54 @@ where
 //     unimplemented!()
 // }
 
-/// Oxidized interface to React.useReducer
-pub fn use_reducer<T, R>(reducer: R, initial_value: T) -> (T, fn())
-where
-    T: Serialize + DeserializeOwned,
-    R: Into<Closure<dyn Fn(T) -> T>>,
-{
-    #[allow(unused_unsafe)]
-    let jsa =
-        unsafe { js_use_reducer(reducer.into(), JsValue::from_serde(&initial_value).unwrap()) };
+// /// Oxidized interface to React.useReducer
+// pub fn use_reducer<T, R>(reducer: R, initial_value: T) -> (T, fn())
+// where
+//     T: Serialize + DeserializeOwned,
+//     R: Into<Closure<dyn Fn(T) -> T>>,
+// {
+//     #[allow(unused_unsafe)]
+//     let jsa =
+//         unsafe { js_use_reducer(reducer.into(), JsValue::from_serde(&initial_value).unwrap()) };
 
-    let current = jsa.get(0).into_serde().unwrap();
-    let update: Function = jsa.get(1).try_into().unwrap();
+//     let current = jsa.get(0).into_serde().unwrap();
+//     let update: Function = jsa.get(1).try_into().unwrap();
 
-    let cb = move |value: T| {
-        //     // unimplemented!()
-        update
-            .call1(&JsValue::UNDEFINED, &JsValue::from_serde(&value).unwrap())
-            .unwrap();
-    };
+//     let cb = move |value: T| {
+//         //     // unimplemented!()
+//         update
+//             .call1(&JsValue::UNDEFINED, &JsValue::from_serde(&value).unwrap())
+//             .unwrap();
+//     };
 
-    // (current, cb)
+//     // (current, cb)
 
-    unimplemented!()
-}
+//     unimplemented!()
+// }
+
+// fn forceupdate_reducer(x: usize) -> usize {
+//     x + 1
+// }
+// pub fn use_force_update() {
+//     let closure = Closure::wrap(Box::new(|| {}));
+//     // let jsa = unsafe {
+//     //     js_use_reducer(
+//     //         Closure::wrap(Box::new(|x: JsValue| {}))
+//     //             .as_ref()
+//     //             .unchecked_ref(),
+//     //         0.into(),
+//     //     )
+//     // };
+
+//     let current = jsa.get(0).into_serde().unwrap();
+//     let update: Function = jsa.get(1).try_into().unwrap();
+
+//     let cb = move |value: T| {
+//         //     // unimplemented!()
+//         update
+//             .call1(&JsValue::UNDEFINED, &JsValue::from_serde(&value).unwrap())
+//             .unwrap();
+//     };
+
+//     // (current, cb)
+// }

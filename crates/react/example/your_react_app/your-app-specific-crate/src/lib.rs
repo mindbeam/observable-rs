@@ -12,6 +12,8 @@ use observable_rs::Observable;
 
 #[wasm_bindgen(start)]
 pub fn start() {
+    log::set_logger(&wasm_bindgen_console_logger::DEFAULT_LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Info);
     crate::utils::set_panic_hook();
 }
 

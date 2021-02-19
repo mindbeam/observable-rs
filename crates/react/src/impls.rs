@@ -1,5 +1,5 @@
 use js_sys::Function;
-use observable_rs::Observable;
+use observable_rs::{Observable, Observe};
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 

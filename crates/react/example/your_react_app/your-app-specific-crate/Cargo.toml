@@ -28,6 +28,9 @@ wee_alloc = { version = "0.4.5", optional = true }
 
 observable-rs = { path = "../../../../observable", version = "0.0.1" }
 observable-react = { path = "../../../../react", version = "0.0.1" }
+log = "0.4"
+wasm-bindgen-console-logger = "^0.1.1"
+
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.13"

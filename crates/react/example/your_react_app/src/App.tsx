@@ -1,7 +1,10 @@
 import React, { useMemo, useReducer, useEffect } from "react";
-import { ReactObservable } from "./your-app-specific-crate-build";
+// import { ReactObservable } from "./your-app-specific-crate-build";
+import { useObserve } from "observable-rs";
 import logo from './logo.svg';
+
 import './App.css';
+
 
 function App({ wasm }: { wasm: any }) {
 
@@ -15,8 +18,10 @@ function App({ wasm }: { wasm: any }) {
     return [thing, thing.get_the_list()];
   }, [wasm]);
 
+
+
   // Bind this observable to the react component
-  the_list.useObserve();
+  useObserve(the_list);
 
   return (
     <div className="App">
@@ -24,7 +29,7 @@ function App({ wasm }: { wasm: any }) {
         The List:<br />
         <ul>
           {the_list.map((v: any) => (
-            <li>{v}</li>
+            <li key={v}>{v}</li>
           ))}
         </ul>
       </header>
