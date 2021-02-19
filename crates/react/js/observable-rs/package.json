@@ -1,0 +1,32 @@
+{
+  "name": "observable-rs",
+  "version": "0.1.8",
+  "description": "Bindings for observable-rs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mindbeam/observable-rs.git"
+  },
+  "keywords": [
+    "observable",
+    "rust",
+    "wasm"
+  ],
+  "author": "Mindbeam Research Inc",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mindbeam/observable-rs/issues"
+  },
+  "homepage": "https://github.com/mindbeam/observable-rs#readme",
+  "dependencies": {
+    "@types/react": "^17.0.2",
+    "react": "^17.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^4.1.5"
+  }
+}
