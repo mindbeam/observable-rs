@@ -19,7 +19,7 @@ macro_rules! impl_jsobservemap {
     }
 }
 
-impl_jsobservemap!(bool, u32);
+impl_jsobservemap!(bool, u32, u64, usize, i32, i64, isize, String);
 
 impl<T> JsObserve for Observable<Vec<T>> where T: Serialize + DeserializeOwned + Clone {}
 impl<T> JsObserveMap for Observable<Vec<T>>
