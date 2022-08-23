@@ -21,13 +21,6 @@ pub trait JsObserveMap {
     fn map_js(&self, cb: Function) -> JsValue;
 }
 
-// The right way for this to work is for serde to realize that None == null
-// but something doesn't seem to be happening there?
-// impl<T> Serialize for Option<T> {}
-
-// A consolation price might be to have an entirel
-// impl <T> JsObserveBase for Observable<Option<T>>
-
 // TODO - Figure out why rust thinks this is unbound when we impl JsObserveBase for O where O: Observe<T>
 impl<T> JsObserveBase for Observable<T>
 where
