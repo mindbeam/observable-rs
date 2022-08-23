@@ -10,10 +10,10 @@ use wasm_bindgen::JsValue;
 /// which cannot themselves be exportable via wasm_bindgen
 pub trait JsObserveBase {
     fn get_js(&self) -> JsValue;
-    fn set_js(&self, value: JsValue);
     fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
     fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
     fn unsubscribe(&self, handle: ListenerHandle) -> bool;
+    // fn destroy(&self);
 }
 pub trait JsObserve: JsObserveBase + JsObserveMap + DynClone {}
 
@@ -21,30 +21,37 @@ pub trait JsObserveMap {
     fn map_js(&self, cb: Function) -> JsValue;
 }
 
+// The right way for this to work is for serde to realize that None == null
+// but something doesn't seem to be happening there?
+// impl<T> Serialize for Option<T> {}
+
+// A consolation price might be to have an entirel
+// impl <T> JsObserveBase for Observable<Option<T>>
+
 // TODO - Figure out why rust thinks this is unbound when we impl JsObserveBase for O where O: Observe<T>
 impl<T> JsObserveBase for Observable<T>
 where
     // O: Observe<T> + Clone,
     T: Serialize + DeserializeOwned,
 {
+    // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
         JsValue::from_serde(&*self.get()).unwrap()
     }
 
-    fn set_js(&self, value: JsValue) {
-        let value: T = JsValue::into_serde(&value).unwrap();
-        self.set(value)
-    }
-
     fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::subscribe(&self, cb)
+        Self::subscribe(self, cb)
     }
 
     fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::once(&self, cb)
+        Self::once(self, cb)
     }
 
     fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        Self::unsubscribe(&self, handle)
+        Self::unsubscribe(self, handle)
     }
+
+    // fn destroy(&self) {
+    //     todo!("destroy method needs doing in ReactObservable");
+    // }
 }

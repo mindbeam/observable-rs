@@ -1,7 +1,7 @@
 use crate::{react::ReactComponent, traits::JsObserve};
-use js_sys::Function;
+use js_sys::Promise;
 use observable_rs::ListenerHandle;
-use wasm_bindgen::{prelude::*, JsCast};
+use wasm_bindgen::{prelude::*, JsCast, JsValue};
 
 /// # Wrapper around JsObserve to which provides React binding convenience methods
 /// The JsObserve trait, and this wrapper are necessary because wasm_bindgen cannot express generics at this time.
@@ -11,15 +11,28 @@ pub struct ReactObservable {
     bound_listener: Option<ListenerHandle>,
 }
 
+struct Foo(Option<Box<Foo>>);
+// [Some(xxxdispatchtablepointerxxx,xxxxstructpointerxxxx)] -> [None]
+
+impl ReactObservable {
+    pub fn new(obs: Box<dyn JsObserve>) -> Self {
+        ReactObservable {
+            obs,
+            bound_listener: None,
+        }
+    }
+}
+
 #[wasm_bindgen]
 impl ReactObservable {
     pub fn get(&self) -> JsValue {
         self.obs.get_js()
     }
-    pub fn map(&self, cb: Function) -> JsValue {
+    pub fn map(&self, cb: js_sys::Function) -> JsValue {
         self.obs.map_js(cb)
     }
     /// Bind this observable to a React component
+    /// for class-based react components
     pub fn bind_component(&mut self, component: ReactComponent) {
         if let Some(_) = self.bound_listener {
             panic!("Can only bind to one component at a time")
@@ -36,8 +49,11 @@ impl ReactObservable {
             self.obs.unsubscribe(handle);
         }
     }
-    pub fn subscribe(&mut self, cb: Function) -> Function {
-        log::info!("subscribe");
+    pub fn subscribe(
+        &mut self,
+        cb: js_sys::Function,
+        // TODO: ChangeContext contract from TS?
+    ) -> js_sys::Function {
         let handle = self.obs.subscribe(Box::new(move || {
             cb.call0(&JsValue::UNDEFINED).unwrap();
         }));
@@ -46,12 +62,23 @@ impl ReactObservable {
         let obs = dyn_clone::clone_box(&*self.obs);
 
         let unsub = Closure::once_into_js(Box::new(move || {
-            log::info!("unsubscribe");
-
             obs.unsubscribe(handle);
         }) as Box<dyn FnOnce()>);
 
-        unsub.unchecked_into()
+        unsub.into()
+    }
+
+    pub fn destroy(&self) {
+        // TODO
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn value(&self) -> JsValue {
+        self.obs.get_js()
+    }
+
+    pub fn load(&self) -> js_sys::Promise {
+        js_sys::Promise::resolve(&JsValue::null())
     }
 }
 
@@ -60,9 +87,6 @@ where
     O: JsObserve + 'static + Sized,
 {
     fn from(obs: O) -> Self {
-        ReactObservable {
-            obs: Box::new(obs),
-            bound_listener: None,
-        }
+        ReactObservable::new(Box::new(obs))
     }
 }

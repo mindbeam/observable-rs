@@ -1,11 +1,14 @@
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
+#[derive(Default)]
 struct ListenerSet {
-    lastidx: usize,
+    nextid: usize,
     items: Vec<ListenerItem>,
 }
+
 struct ListenerItem {
-    idx: usize,
+    /// Monotonic id for use in the binary search
+    id: usize,
     listener: Listener,
 }
 
@@ -19,7 +22,7 @@ pub struct ListenerHandle(usize);
 #[derive(Clone)]
 pub struct Observable<T> {
     value: Rc<RefCell<T>>,
-    listener_set: Rc<RefCell<Option<ListenerSet>>>,
+    listener_set: Rc<RefCell<ListenerSet>>,
 }
 
 impl<T> Observable<T> {
@@ -32,28 +35,25 @@ impl<T> Observable<T> {
     fn notify(&self) {
         let mut working_set: Vec<Listener>;
         {
-            if let Some(ref mut listenerset) = *self.listener_set.borrow_mut() {
-                // It's possible to add listeners while we are firing a listener
-                // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
+            let mut listenerset = self.listener_set.borrow_mut();
+            // It's possible to add listeners while we are firing a listener
+            // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
 
-                working_set = Vec::with_capacity(listenerset.items.len());
+            working_set = Vec::with_capacity(listenerset.items.len());
 
-                // Take all Listener::Once entries, and clone the others
-                let mut i = 0;
-                while i != listenerset.items.len() {
-                    match listenerset.items[i].listener {
-                        Listener::Once(_) => {
-                            // Just take it
-                            working_set.push(listenerset.items.remove(i).listener);
-                        }
-                        Listener::Durable(ref f) => {
-                            working_set.push(Listener::Durable(f.clone()));
-                            i += 1;
-                        }
+            // Take all Listener::Once entries, and clone the others
+            let mut i = 0;
+            while i != listenerset.items.len() {
+                match listenerset.items[i].listener {
+                    Listener::Once(_) => {
+                        // Just take it
+                        working_set.push(listenerset.items.remove(i).listener);
+                    }
+                    Listener::Durable(ref f) => {
+                        working_set.push(Listener::Durable(f.clone()));
+                        i += 1;
                     }
                 }
-            } else {
-                return;
             }
         }
 
@@ -71,26 +71,12 @@ impl<T> Observable<T> {
 
     fn _subscribe(&self, listener: Listener) -> ListenerHandle {
         let mut listener_set = self.listener_set.borrow_mut();
-        match *listener_set {
-            Some(ref mut listener_set) => {
-                listener_set.lastidx += 1;
-                listener_set.items.push(ListenerItem {
-                    idx: listener_set.lastidx,
-                    listener,
-                });
-                ListenerHandle(listener_set.lastidx)
-            }
-            None => {
-                *listener_set = Some(ListenerSet {
-                    lastidx: 0,
-                    items: vec![ListenerItem { idx: 0, listener }],
-                });
 
-                ListenerHandle(0)
-            }
-        }
+        let id = listener_set.nextid;
+        listener_set.nextid += 1;
+        listener_set.items.push(ListenerItem { id, listener });
+        ListenerHandle(id)
     }
-    // }
 
     // impl<T> Set<T> for Observable<T> {
     pub fn set(&self, value: T) {
@@ -116,20 +102,17 @@ impl<T> Observable<T> {
 
     pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
         let mut listener_set = self.listener_set.borrow_mut();
-        match *listener_set {
-            Some(ref mut listener_set) => {
-                match listener_set
-                    .items
-                    .binary_search_by(|probe| probe.idx.cmp(&handle.0))
-                {
-                    Ok(i) => {
-                        listener_set.items.remove(i);
-                        true
-                    }
-                    Err(_) => false,
-                }
+
+        // Find the current listener offset
+        match listener_set
+            .items
+            .binary_search_by(|probe| probe.id.cmp(&handle.0))
+        {
+            Ok(offset) => {
+                listener_set.items.remove(offset);
+                true
             }
-            None => false,
+            Err(_) => false,
         }
     }
 }
