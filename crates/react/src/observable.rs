@@ -11,7 +11,6 @@ pub struct ReactObservable {
     bound_listener: Option<ListenerHandle>,
 }
 
-struct Foo(Option<Box<Foo>>);
 
 impl ReactObservable {
     pub fn new(obs: Box<dyn JsObserve>) -> Self {
