@@ -12,7 +12,6 @@ pub struct ReactObservable {
 }
 
 struct Foo(Option<Box<Foo>>);
-// [Some(xxxdispatchtablepointerxxx,xxxxstructpointerxxxx)] -> [None]
 
 impl ReactObservable {
     pub fn new(obs: Box<dyn JsObserve>) -> Self {
