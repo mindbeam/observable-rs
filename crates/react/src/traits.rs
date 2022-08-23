@@ -10,10 +10,10 @@ use wasm_bindgen::JsValue;
 /// which cannot themselves be exportable via wasm_bindgen
 pub trait JsObserveBase {
     fn get_js(&self) -> JsValue;
-    fn set_js(&self, value: JsValue);
     fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
     fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
     fn unsubscribe(&self, handle: ListenerHandle) -> bool;
+    // fn destroy(&self);
 }
 pub trait JsObserve: JsObserveBase + JsObserveMap + DynClone {}
 
@@ -27,24 +27,24 @@ where
     // O: Observe<T> + Clone,
     T: Serialize + DeserializeOwned,
 {
+    // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
         JsValue::from_serde(&*self.get()).unwrap()
     }
 
-    fn set_js(&self, value: JsValue) {
-        let value: T = JsValue::into_serde(&value).unwrap();
-        self.set(value)
-    }
-
     fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::subscribe(&self, cb)
+        Self::subscribe(self, cb)
     }
 
     fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::once(&self, cb)
+        Self::once(self, cb)
     }
 
     fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        Self::unsubscribe(&self, handle)
+        Self::unsubscribe(self, handle)
     }
+
+    // fn destroy(&self) {
+    //     todo!("destroy method needs doing in ReactObservable");
+    // }
 }
