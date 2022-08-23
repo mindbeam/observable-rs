@@ -1,7 +1,6 @@
 use crate::{react::ReactComponent, traits::JsObserve};
-use js_sys::Promise;
 use observable_rs::ListenerHandle;
-use wasm_bindgen::{prelude::*, JsCast, JsValue};
+use wasm_bindgen::{prelude::*, JsValue};
 
 /// # Wrapper around JsObserve to which provides React binding convenience methods
 /// The JsObserve trait, and this wrapper are necessary because wasm_bindgen cannot express generics at this time.
@@ -10,7 +9,6 @@ pub struct ReactObservable {
     obs: Box<dyn JsObserve>,
     bound_listener: Option<ListenerHandle>,
 }
-
 
 impl ReactObservable {
     pub fn new(obs: Box<dyn JsObserve>) -> Self {
@@ -32,7 +30,7 @@ impl ReactObservable {
     /// Bind this observable to a React component
     /// for class-based react components
     pub fn bind_component(&mut self, component: ReactComponent) {
-        if let Some(_) = self.bound_listener {
+        if self.bound_listener.is_some() {
             panic!("Can only bind to one component at a time")
         }
 
