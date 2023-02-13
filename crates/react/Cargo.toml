@@ -2,7 +2,7 @@
 name = "observable-react"
 version = "0.1.0"
 authors = ["Daniel Norman <daniel@danielnorman.net>"]
-edition = "2018"
+edition = "2021"
 
 categories = ["wasm", "web-programming"]
 description = "observable-react enables react component bindings to rust components using WASM"
