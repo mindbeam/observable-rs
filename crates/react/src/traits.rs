@@ -1,6 +1,6 @@
 use std::cell::Ref;
 
-// use dyn_clone::DynClone;
+use dyn_clone::DynClone;
 use js_sys::Function;
 use observable_rs::{ListenerHandle, Observable};
 // use serde::{de::DeserializeOwned, Serialize};
@@ -10,8 +10,8 @@ use wasm_bindgen::JsValue;
 
 /// This trait is necessary to support generic observables
 /// which cannot themselves be exportable via wasm_bindgen
-pub trait JsObserve: Clone {
-    type Target: Clone + Into<JsValue>;
+pub trait JsObserve: DynClone {
+    // type Target: Clone + Into<JsValue>;
 
     fn get_js(&self) -> JsValue;
 
@@ -25,27 +25,30 @@ pub trait JsObserve: Clone {
         ar.into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Observable::subscribe(
-            &self,
-            Box::new(move |v: Self::Target| -> JsValue { cb(v.clone().into()) }),
-        )
-    }
-
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Self::once(self, Box::new(move |v: Self::Target| cb(v.clone().into())))
-    }
-
     fn unsubscribe(&self, handle: ListenerHandle) -> bool {
         Self::unsubscribe(self, handle)
     }
+
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle;
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle;
 }
 
 impl<T> JsObserve for Observable<T>
 where
     T: Into<JsValue> + Clone,
 {
-    type Target = T;
+    // type Target = T;
+
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Observable::subscribe(
+            &self,
+            Box::new(move |v: T| -> JsValue { cb(v.clone().into()) }),
+        )
+    }
+
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Self::once(self, Box::new(move |v: T| cb(v.clone().into())))
+    }
 
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
