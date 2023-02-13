@@ -1,7 +1,7 @@
 use std::cell::Ref;
 
 use dyn_clone::DynClone;
-use js_sys::Function;
+use js_sys::{Array, Function};
 use observable_rs::{ListenerHandle, Observable};
 // use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
@@ -37,8 +37,39 @@ impl<T> JsObserve for Observable<T>
 where
     T: Into<JsValue> + Clone,
 {
-    // type Target = T;
+    // we need to be able provide a JS value (JS only has one value type)
+    fn get_js(&self) -> JsValue {
+        let a: Ref<T> = self.get();
+        (&*a).clone().into()
+    }
 
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Observable::subscribe(
+            &self,
+            Box::new(move |v: T| -> JsValue { cb(v.clone().into()) }),
+        )
+    }
+
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Self::once(self, Box::new(move |v: T| cb(v.clone().into())))
+    }
+}
+
+pub struct ObservableList<T> {
+    list: std::rc::Rc<Vec<T>>,
+}
+impl<T> Clone for ObservableList<T> {
+    fn clone(&self) -> Self {
+        Self {
+            list: self.list.clone(),
+        }
+    }
+}
+
+impl<T> JsObserve for ObservableList<T>
+where
+    T: Into<JsValue> + Clone,
+{
     fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
         Observable::subscribe(
             &self,
@@ -55,20 +86,7 @@ where
         let a: Ref<T> = self.get();
         (&*a).clone().into()
     }
-}
 
-impl<T> JsObserve for Observable<Vec<T>>
-where
-    T: Into<JsValue> + Clone,
-{
-    type Target = Vec<T>;
-
-    // we need to be able provide a JS value (JS only has one value type)
-    fn get_js(&self) -> JsValue {
-        // let a: Ref<T> = self.get();
-        // (&*a).clone().into()
-        JsValue::UNDEFINED
-    }
     fn map_js(&self, cb: Function) -> JsValue {
         let ar = js_sys::Array::new();
 

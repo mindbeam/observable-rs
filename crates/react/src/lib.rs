@@ -8,8 +8,6 @@ pub mod impls;
 pub mod react;
 pub mod traits;
 
-use std::any::Any;
-
 use crate::traits::JsObserve;
 use wasm_bindgen::{prelude::*, JsValue};
 
@@ -73,7 +71,7 @@ use wasm_bindgen::{prelude::*, JsValue};
 /// ```
 #[wasm_bindgen]
 pub struct JsObservable {
-    obs: Box<dyn JsObserve<Target =Any>,
+    obs: Box<dyn JsObserve>,
 }
 
 impl JsObservable {
@@ -126,7 +124,7 @@ impl JsObservable {
 
 impl<O> From<O> for JsObservable
 where
-    O: JsObserve<dyn Any> + 'static + Sized,
+    O: JsObserve + 'static + Sized,
 {
     fn from(obs: O) -> Self {
         JsObservable::new(Box::new(obs))
