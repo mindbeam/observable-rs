@@ -1,50 +1,82 @@
-use dyn_clone::DynClone;
+use std::cell::Ref;
+
+// use dyn_clone::DynClone;
 use js_sys::Function;
 use observable_rs::{ListenerHandle, Observable};
-use serde::{de::DeserializeOwned, Serialize};
+// use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 
 // Traits for javascript-specific functionality around Observable<T>
 
 /// This trait is necessary to support generic observables
 /// which cannot themselves be exportable via wasm_bindgen
-pub trait JsObserveBase {
+pub trait JsObserve: Clone {
+    type Target: Clone + Into<JsValue>;
+
     fn get_js(&self) -> JsValue;
-    fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
-    fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle;
-    fn unsubscribe(&self, handle: ListenerHandle) -> bool;
-    // fn destroy(&self);
-}
-pub trait JsObserve: JsObserveBase + JsObserveMap + DynClone {}
 
-pub trait JsObserveMap {
-    fn map_js(&self, cb: Function) -> JsValue;
-}
-
-// TODO - Figure out why rust thinks this is unbound when we impl JsObserveBase for O where O: Observe<T>
-impl<T> JsObserveBase for Observable<T>
-where
-    // O: Observe<T> + Clone,
-    T: Serialize + DeserializeOwned,
-{
-    // we need to be able provide a JS value (JS only has one value type)
-    fn get_js(&self) -> JsValue {
-        JsValue::from_serde(&*self.get()).unwrap()
+    /// The default implementation of map is to call the closure once
+    /// with the output of .get - other types may call the closure multiple
+    /// times for different sub-values
+    fn map_js(&self, cb: Function) -> JsValue {
+        let ar = js_sys::Array::new();
+        let ret = cb.call1(&JsValue::UNDEFINED, &self.get_js()).unwrap();
+        ar.push(&ret);
+        ar.into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::subscribe(self, cb)
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Observable::subscribe(
+            &self,
+            Box::new(move |v: Self::Target| -> JsValue { cb(v.clone().into()) }),
+        )
     }
 
-    fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        Self::once(self, cb)
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
+        Self::once(self, Box::new(move |v: Self::Target| cb(v.clone().into())))
     }
 
     fn unsubscribe(&self, handle: ListenerHandle) -> bool {
         Self::unsubscribe(self, handle)
     }
+}
 
-    // fn destroy(&self) {
-    //     todo!("destroy method needs doing in ReactObservable");
-    // }
+impl<T> JsObserve for Observable<T>
+where
+    T: Into<JsValue> + Clone,
+{
+    type Target = T;
+
+    // we need to be able provide a JS value (JS only has one value type)
+    fn get_js(&self) -> JsValue {
+        let a: Ref<T> = self.get();
+        (&*a).clone().into()
+    }
+}
+
+impl<T> JsObserve for Observable<Vec<T>>
+where
+    T: Into<JsValue> + Clone,
+{
+    type Target = Vec<T>;
+
+    // we need to be able provide a JS value (JS only has one value type)
+    fn get_js(&self) -> JsValue {
+        // let a: Ref<T> = self.get();
+        // (&*a).clone().into()
+        JsValue::UNDEFINED
+    }
+    fn map_js(&self, cb: Function) -> JsValue {
+        let ar = js_sys::Array::new();
+
+        for v in self.get().iter() {
+            let ret = cb
+                .call1(&JsValue::UNDEFINED, &JsValue::from_serde(v).unwrap())
+                .unwrap();
+
+            ar.push(&ret);
+        }
+
+        ar.into()
+    }
 }

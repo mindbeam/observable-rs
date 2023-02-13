@@ -1,39 +1,51 @@
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
 #[derive(Default)]
-struct ListenerSet {
+struct ListenerSet<T> {
     nextid: usize,
-    items: Vec<ListenerItem>,
+    items: Vec<ListenerItem<T>>,
 }
 
-struct ListenerItem {
+struct ListenerItem<T> {
     /// Monotonic id for use in the binary search
     id: usize,
-    listener: Listener,
+    listener: Listener<T>,
 }
 
-pub enum Listener {
-    Once(Box<dyn Fn()>),
-    Durable(Rc<RefCell<Box<dyn Fn()>>>),
+pub enum Listener<T> {
+    Once(Box<dyn Fn(&T)>),
+    Durable(Rc<RefCell<Box<dyn Fn(&T)>>>),
 }
 
 pub struct ListenerHandle(usize);
 
-#[derive(Clone)]
 pub struct Observable<T> {
     value: Rc<RefCell<T>>,
-    listener_set: Rc<RefCell<ListenerSet>>,
+    listener_set: Rc<RefCell<ListenerSet<T>>>,
+}
+
+// Implemented manually because `T` does not need to be Clone
+impl<T> Clone for Observable<T> {
+    fn clone(&self) -> Self {
+        Observable {
+            value: self.value.clone(),
+            listener_set: self.listener_set.clone(),
+        }
+    }
 }
 
 impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: Rc::new(RefCell::new(value)),
-            listener_set: Default::default(),
+            listener_set: Rc::new(RefCell::new(ListenerSet {
+                nextid: 0,
+                items: Vec::new(),
+            })),
         }
     }
     fn notify(&self) {
-        let mut working_set: Vec<Listener>;
+        let mut working_set: Vec<Listener<T>>;
         {
             let mut listenerset = self.listener_set.borrow_mut();
             // It's possible to add listeners while we are firing a listener
@@ -57,19 +69,21 @@ impl<T> Observable<T> {
             }
         }
 
+        let r = self.get();
+
         // Now that the borrow on the listeners vec is over, we can safely call them
         // We can also be confident that we won't call any listeners which were attached during our dispatch
         for listener in working_set {
             match listener {
-                Listener::Once(f) => f(),
+                Listener::Once(f) => f(&r),
                 Listener::Durable(f) => {
-                    (f.borrow_mut())();
+                    (f.borrow_mut())(&r);
                 }
             }
         }
     }
 
-    fn _subscribe(&self, listener: Listener) -> ListenerHandle {
+    fn _subscribe(&self, listener: Listener<T>) -> ListenerHandle {
         let mut listener_set = self.listener_set.borrow_mut();
 
         let id = listener_set.nextid;
@@ -91,12 +105,12 @@ impl<T> Observable<T> {
     pub fn get(&self) -> Ref<T> {
         self.value.borrow()
     }
-    pub fn subscribe(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        let listener = Listener::Durable(Rc::new(RefCell::new(cb)));
+    pub fn subscribe(&self, cb: Box<(dyn Fn(&T))>) -> ListenerHandle {
+        let listener = Listener::Durable(Rc::new(RefCell::new(cb.into())));
         self._subscribe(listener)
     }
-    pub fn once(&self, cb: Box<dyn Fn()>) -> ListenerHandle {
-        let listener = Listener::Once(cb);
+    pub fn once(&self, cb: Box<(dyn Fn(&T))>) -> ListenerHandle {
+        let listener = Listener::Once(cb.into());
         self._subscribe(listener)
     }
 
