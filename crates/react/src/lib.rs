@@ -4,6 +4,7 @@
 //!
 //! ```
 
+pub mod collections;
 pub mod impls;
 pub mod react;
 pub mod traits;
