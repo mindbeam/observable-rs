@@ -105,11 +105,11 @@ impl<T> Observable<T> {
     pub fn get(&self) -> Ref<T> {
         self.value.borrow()
     }
-    pub fn subscribe(&self, cb: Box<(dyn Fn(&T))>) -> ListenerHandle {
+    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
         let listener = Listener::Durable(Rc::new(RefCell::new(cb.into())));
         self._subscribe(listener)
     }
-    pub fn once(&self, cb: Box<(dyn Fn(&T))>) -> ListenerHandle {
+    pub fn once(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
         let listener = Listener::Once(cb.into());
         self._subscribe(listener)
     }
@@ -130,6 +130,21 @@ impl<T> Observable<T> {
         }
     }
 }
+
+impl<T, V> Observable<V>
+where
+    V: Pushable<Value = T>,
+{
+    pub fn push(&self, item: T) {
+        {
+            let mut ref_mut = self.value.borrow_mut();
+            let vec = &mut *ref_mut;
+            vec.push(item);
+        }
+        self.notify();
+    }
+}
+
 impl<T> Default for Observable<T>
 where
     T: Default,
@@ -139,9 +154,69 @@ where
     }
 }
 
-impl<T> Observable<Vec<T>> {
-    pub fn push(&mut self, item: T) {
-        self.value.borrow_mut().push(item);
-        self.notify();
+pub trait Pushable {
+    type Value;
+    fn push(&mut self, value: Self::Value);
+}
+
+impl<T> Pushable for Vec<T> {
+    type Value = T;
+    fn push(&mut self, value: Self::Value) {
+        self.push(value)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{cell::RefCell, rc::Rc};
+
+    use crate::Pushable;
+
+    use super::Observable;
+
+    #[test]
+    fn observable_vec_push() {
+        let obs = Observable::new(vec![1, 2, 3]);
+
+        let counter: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+
+        {
+            let counter = counter.clone();
+            obs.subscribe(Box::new(move |v: &Vec<u32>| {
+                *(counter.borrow_mut()) = Some(v.len());
+            }));
+        }
+
+        assert_eq!(*counter.borrow(), None);
+        obs.push(0);
+        assert_eq!(*counter.borrow(), Some(4));
+    }
+
+    struct Wrapper<T>(Vec<T>);
+
+    impl<T> Pushable for Wrapper<T> {
+        type Value = T;
+
+        fn push(&mut self, value: Self::Value) {
+            self.0.push(value)
+        }
+    }
+
+    #[test]
+    fn observable_vec_wrapper_push() {
+        let obs = Observable::new(Wrapper(vec![1, 2, 3]));
+
+        let counter: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+
+        {
+            let counter = counter.clone();
+            obs.subscribe(Box::new(move |v: &Wrapper<u32>| {
+                *(counter.borrow_mut()) = Some(v.0.len());
+            }));
+        }
+
+        assert_eq!(*counter.borrow(), None);
+        obs.push(0);
+        assert_eq!(*counter.borrow(), Some(4));
     }
 }
