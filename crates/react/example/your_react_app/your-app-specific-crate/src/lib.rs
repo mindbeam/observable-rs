@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-use observable_react::JsObservable;
+use observable_react::{collections::List, JsObservable};
 use observable_rs::Observable;
 
 #[wasm_bindgen(start)]
@@ -27,7 +27,7 @@ pub fn create_rust_thing() -> RustThing {
 #[derive(Clone, Default)]
 pub struct RustThing {
     things: usize,
-    list: Observable<Vec<String>>,
+    list: Observable<List<String>>,
 }
 
 #[wasm_bindgen]
@@ -37,6 +37,7 @@ impl RustThing {
         self.list.push(format!("Thing {}", self.things));
     }
     pub fn get_the_list(&self) -> JsObservable {
-        self.list.clone().into()
+        let list = self.list.clone();
+        list.into()
     }
 }
