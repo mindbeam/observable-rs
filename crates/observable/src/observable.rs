@@ -14,7 +14,7 @@ struct ListenerItem<T> {
 
 pub enum Listener<T> {
     Once(Box<dyn Fn(&T)>),
-    Durable(Rc<RefCell<Box<dyn Fn(&T)>>>),
+    Durable(Rc<dyn Fn(&T)>),
 }
 
 pub struct ListenerHandle(usize);
@@ -76,9 +76,7 @@ impl<T> Observable<T> {
         for listener in working_set {
             match listener {
                 Listener::Once(f) => f(&r),
-                Listener::Durable(f) => {
-                    (f.borrow_mut())(&r);
-                }
+                Listener::Durable(f) => f(&r),
             }
         }
     }
@@ -106,11 +104,11 @@ impl<T> Observable<T> {
         self.value.borrow()
     }
     pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        let listener = Listener::Durable(Rc::new(RefCell::new(cb.into())));
+        let listener = Listener::Durable(cb.into());
         self._subscribe(listener)
     }
     pub fn once(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        let listener = Listener::Once(cb.into());
+        let listener = Listener::Once(cb);
         self._subscribe(listener)
     }
 
