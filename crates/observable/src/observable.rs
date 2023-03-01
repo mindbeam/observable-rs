@@ -1,9 +1,17 @@
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
-#[derive(Default)]
 struct ListenerSet<T> {
     nextid: usize,
     items: Vec<ListenerItem<T>>,
+}
+
+impl<T> Default for ListenerSet<T> {
+    fn default() -> Self {
+        ListenerSet {
+            nextid: 0,
+            items: Vec::new(),
+        }
+    }
 }
 
 struct ListenerItem<T> {
