@@ -20,6 +20,31 @@ struct ListenerItem<T> {
     listener: Listener<T>,
 }
 
+impl<T> ListenerSet<T> {
+    fn working_set(&mut self) -> Vec<Listener<T>> {
+        // It's possible to add listeners while we are firing a listener
+        // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
+        let mut working_set: Vec<Listener<T>> = Vec::with_capacity(self.items.len());
+
+        let items = unsafe {
+            let items = &mut self.items as *mut Vec<ListenerItem<T>>;
+            (*items).drain(..)
+        };
+
+        for item in items {
+            match &item.listener {
+                Listener::Once(_) => working_set.push(item.listener),
+                Listener::Durable(f) => {
+                    working_set.push(Listener::Durable(f.clone()));
+                    self.items.push(item);
+                }
+            }
+        }
+
+        working_set
+    }
+}
+
 pub enum Listener<T> {
     Once(Box<dyn Fn(&T)>),
     Durable(Rc<dyn Fn(&T)>),
@@ -46,36 +71,12 @@ impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: Rc::new(RefCell::new(value)),
-            listener_set: Rc::new(RefCell::new(ListenerSet {
-                nextid: 0,
-                items: Vec::new(),
-            })),
+            listener_set: Rc::new(RefCell::new(ListenerSet::default())),
         }
     }
+
     fn notify(&self) {
-        let mut working_set: Vec<Listener<T>>;
-        {
-            let mut listenerset = self.listener_set.borrow_mut();
-            // It's possible to add listeners while we are firing a listener
-            // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
-
-            working_set = Vec::with_capacity(listenerset.items.len());
-
-            // Take all Listener::Once entries, and clone the others
-            let mut i = 0;
-            while i != listenerset.items.len() {
-                match listenerset.items[i].listener {
-                    Listener::Once(_) => {
-                        // Just take it
-                        working_set.push(listenerset.items.remove(i).listener);
-                    }
-                    Listener::Durable(ref f) => {
-                        working_set.push(Listener::Durable(f.clone()));
-                        i += 1;
-                    }
-                }
-            }
-        }
+        let working_set = { self.listener_set.borrow_mut().working_set() };
 
         let r = self.get();
 
@@ -176,7 +177,7 @@ impl<T> Pushable for Vec<T> {
 mod test {
     use std::{cell::RefCell, rc::Rc};
 
-    use crate::Pushable;
+    use crate::{observable::ListenerSet, Pushable};
 
     use super::Observable;
 
@@ -224,5 +225,47 @@ mod test {
         assert_eq!(*counter.borrow(), None);
         obs.push(0);
         assert_eq!(*counter.borrow(), Some(4));
+    }
+
+    #[test]
+    fn observable_reactivity() {
+        let obs: ListenerSet<Wrapper<Vec<u32>>> = ListenerSet::default();
+
+        let obs = Observable::new("hello".to_owned());
+
+        let counter_durable: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        {
+            let counter_durable = counter_durable.clone();
+            obs.subscribe(Box::new(move |_: &String| {
+                let mut ptr = counter_durable.borrow_mut();
+                *ptr = match *ptr {
+                    Some(c) => Some(c + 1),
+                    None => Some(1),
+                };
+            }));
+        }
+
+        let counter_once: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        {
+            let counter_durable = counter_once.clone();
+            obs.once(Box::new(move |_: &String| {
+                let mut ptr = counter_durable.borrow_mut();
+                *ptr = match *ptr {
+                    Some(_) => unreachable!(),
+                    None => Some(1),
+                };
+            }));
+        }
+
+        assert_eq!(*counter_durable.borrow(), None);
+        assert_eq!(*counter_once.borrow(), None);
+
+        obs.set("world".into());
+        assert_eq!(*counter_durable.borrow(), Some(1));
+        assert_eq!(*counter_once.borrow(), Some(1));
+
+        obs.set("hallo".into());
+        assert_eq!(*counter_durable.borrow(), Some(2));
+        assert_eq!(*counter_once.borrow(), Some(1));
     }
 }
