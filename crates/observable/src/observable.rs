@@ -43,6 +43,46 @@ impl<T> ListenerSet<T> {
 
         working_set
     }
+
+    fn notify(&mut self, value: &T) {
+        let working_set = self.working_set();
+
+        // Now that the borrow on the listeners vec is over, we can safely call them
+        // We can also be confident that we won't call any listeners which were attached during our dispatch
+        for listener in working_set {
+            match listener {
+                Listener::Once(f) => f(value),
+                Listener::Durable(f) => f(value),
+            }
+        }
+    }
+
+    fn _subscribe(&mut self, listener: Listener<T>) -> ListenerHandle {
+        let id = self.nextid;
+        self.nextid += 1;
+        self.items.push(ListenerItem { id, listener });
+        ListenerHandle(id)
+    }
+
+    pub fn subscribe(&mut self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
+        let listener = Listener::Durable(cb.into());
+        self._subscribe(listener)
+    }
+    pub fn once(&mut self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
+        let listener = Listener::Once(cb);
+        self._subscribe(listener)
+    }
+
+    pub fn unsubscribe(&mut self, handle: ListenerHandle) -> bool {
+        // Find the current listener offset
+        match self.items.binary_search_by(|probe| probe.id.cmp(&handle.0)) {
+            Ok(offset) => {
+                self.items.remove(offset);
+                true
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 pub enum Listener<T> {
@@ -75,66 +115,29 @@ impl<T> Observable<T> {
         }
     }
 
-    fn notify(&self) {
-        let working_set = { self.listener_set.borrow_mut().working_set() };
-
-        let r = self.get();
-
-        // Now that the borrow on the listeners vec is over, we can safely call them
-        // We can also be confident that we won't call any listeners which were attached during our dispatch
-        for listener in working_set {
-            match listener {
-                Listener::Once(f) => f(&r),
-                Listener::Durable(f) => f(&r),
-            }
-        }
-    }
-
-    fn _subscribe(&self, listener: Listener<T>) -> ListenerHandle {
-        let mut listener_set = self.listener_set.borrow_mut();
-
-        let id = listener_set.nextid;
-        listener_set.nextid += 1;
-        listener_set.items.push(ListenerItem { id, listener });
-        ListenerHandle(id)
-    }
-
     // impl<T> Set<T> for Observable<T> {
     pub fn set(&self, value: T) {
         {
             *(self.value.borrow_mut()) = value;
         };
-
-        self.notify();
+        let r = self.value.borrow();
+        self.listener_set.borrow_mut().notify(&r);
     }
     // }
     // impl<T> Observe<T> for Observable<T> {
     pub fn get(&self) -> Ref<T> {
         self.value.borrow()
     }
+
     pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        let listener = Listener::Durable(cb.into());
-        self._subscribe(listener)
+        self.listener_set.borrow_mut().subscribe(cb)
     }
     pub fn once(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        let listener = Listener::Once(cb);
-        self._subscribe(listener)
+        self.listener_set.borrow_mut().once(cb)
     }
 
     pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        let mut listener_set = self.listener_set.borrow_mut();
-
-        // Find the current listener offset
-        match listener_set
-            .items
-            .binary_search_by(|probe| probe.id.cmp(&handle.0))
-        {
-            Ok(offset) => {
-                listener_set.items.remove(offset);
-                true
-            }
-            Err(_) => false,
-        }
+        self.listener_set.borrow_mut().unsubscribe(handle)
     }
 }
 
@@ -148,7 +151,8 @@ where
             let vec = &mut *ref_mut;
             vec.push(item);
         }
-        self.notify();
+
+        self.listener_set.borrow_mut().notify(&self.value.borrow());
     }
 }
 
@@ -177,7 +181,7 @@ impl<T> Pushable for Vec<T> {
 mod test {
     use std::{cell::RefCell, rc::Rc};
 
-    use crate::{observable::ListenerSet, Pushable};
+    use crate::Pushable;
 
     use super::Observable;
 
@@ -229,8 +233,6 @@ mod test {
 
     #[test]
     fn observable_reactivity() {
-        let obs: ListenerSet<Wrapper<Vec<u32>>> = ListenerSet::default();
-
         let obs = Observable::new("hello".to_owned());
 
         let counter_durable: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
