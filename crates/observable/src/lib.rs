@@ -5,9 +5,12 @@
 //! ```
 
 /// Public API.
+mod notifier;
 mod observable;
 
 // Reexport of the public API.
+#[doc(inline)]
+pub use crate::notifier::*;
 #[doc(inline)]
 pub use crate::observable::*;
 
