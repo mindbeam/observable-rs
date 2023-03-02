@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-pub(crate) struct Notifier<T>(RefCell<ListenerSet<T>>);
+pub struct Notifier<T>(RefCell<ListenerSet<T>>);
 
 impl<T> Default for Notifier<T> {
     fn default() -> Self {
