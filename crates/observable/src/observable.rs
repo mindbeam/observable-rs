@@ -26,17 +26,32 @@ impl<T> ListenerSet<T> {
         // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
         let mut working_set: Vec<Listener<T>> = Vec::with_capacity(self.items.len());
 
-        let items = unsafe {
-            let items = &mut self.items as *mut Vec<ListenerItem<T>>;
-            (*items).drain(..)
+        let first_once_pos = 'first_once_pos: {
+            for (index, item) in self.items.iter().enumerate() {
+                match &item.listener {
+                    Listener::Once(_) => break 'first_once_pos Some(index),
+                    Listener::Durable(f) => {
+                        working_set.push(Listener::Durable(f.clone()));
+                    }
+                }
+            }
+            None
         };
 
-        for item in items {
-            match &item.listener {
-                Listener::Once(_) => working_set.push(item.listener),
-                Listener::Durable(f) => {
-                    working_set.push(Listener::Durable(f.clone()));
-                    self.items.push(item);
+        // only moves durables if necessary while fills the working_set
+        if let Some(first_once_pos) = first_once_pos {
+            let items = unsafe {
+                let items = &mut self.items as *mut Vec<ListenerItem<T>>;
+                (*items).drain(first_once_pos..)
+            };
+
+            for item in items {
+                match &item.listener {
+                    Listener::Once(_) => working_set.push(item.listener),
+                    Listener::Durable(f) => {
+                        working_set.push(Listener::Durable(f.clone()));
+                        self.items.push(item);
+                    }
                 }
             }
         }
