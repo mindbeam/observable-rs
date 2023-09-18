@@ -1,53 +1,59 @@
-use std::{cell::Ref, cell::RefCell, rc::Rc};
+use std::cell::{Ref, RefCell};
+use std::rc::Rc;
 
-use crate::notifier::{ListenerHandle, Notifier};
+use crate::notifier::{CleanUp, ListenerHandle, Notifier};
 
-pub struct Observable<T> {
-    value: Rc<RefCell<T>>,
-    notifier: Rc<Notifier<T>>,
+pub struct Observable<T>(Rc<Inner<T>>);
+
+struct Inner<T> {
+    value: RefCell<T>,
+    notifier: Notifier<T>,
 }
 
 // Implemented manually because `T` does not need to be Clone
 impl<T> Clone for Observable<T> {
     fn clone(&self) -> Self {
-        Observable {
-            value: self.value.clone(),
-            notifier: self.notifier.clone(),
-        }
+        Observable(self.0.clone())
     }
 }
 
 impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
-        Self {
-            value: Rc::new(RefCell::new(value)),
-            notifier: Rc::default(),
-        }
+        Self(Rc::new(Inner {
+            value: RefCell::new(value),
+            notifier: Notifier::default(),
+        }))
     }
 
-    // impl<T> Set<T> for Observable<T> {
     pub fn set(&self, value: T) {
-        {
-            *(self.value.borrow_mut()) = value;
-        };
-        let r = self.value.borrow();
-        self.notifier.notify(&r);
+        self.0.value.replace(value);
+        let r = self.0.value.borrow();
+        self.0.notifier.notify(&r);
     }
-    // }
-    // impl<T> Observe<T> for Observable<T> {
+}
+
+impl<T> Observable<T> {
     pub fn get(&self) -> Ref<T> {
-        self.value.borrow()
+        self.0.value.borrow()
     }
 
     pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        self.notifier.subscribe(cb)
+        self.0.notifier.subscribe(cb)
     }
-    pub fn once(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        self.notifier.once(cb)
+    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> ListenerHandle {
+        self.0.notifier.once(cb)
+    }
+
+    pub fn on_cleanup(&self, clean_up: impl Into<CleanUp>) {
+        self.0.notifier.on_cleanup(clean_up.into())
     }
 
     pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        self.notifier.unsubscribe(handle)
+        self.0.notifier.unsubscribe(handle)
+    }
+
+    pub fn clean_up(&self) {
+        self.0.notifier.clean_up()
     }
 }
 
@@ -57,12 +63,12 @@ where
 {
     pub fn push(&self, item: T) {
         {
-            let mut ref_mut = self.value.borrow_mut();
+            let mut ref_mut = self.0.value.borrow_mut();
             let vec = &mut *ref_mut;
             vec.push(item);
         }
 
-        self.notifier.notify(&self.value.borrow());
+        self.0.notifier.notify(&self.0.value.borrow());
     }
 }
 
@@ -87,9 +93,26 @@ impl<T> Pushable for Vec<T> {
     }
 }
 
+impl<T: 'static> From<(&Observable<T>, ListenerHandle)> for CleanUp {
+    fn from((obs, handle): (&Observable<T>, ListenerHandle)) -> Self {
+        let weak_obs = Rc::downgrade(&obs.0);
+
+        let f: Box<dyn FnOnce()> = Box::new(move || {
+            if let Some(obs) = weak_obs.upgrade() {
+                Observable::<T>(obs).unsubscribe(handle);
+            }
+        });
+
+        CleanUp::from(f)
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use crate::Pushable;
 
@@ -104,7 +127,7 @@ mod test {
         {
             let counter = counter.clone();
             obs.subscribe(Box::new(move |v: &Vec<u32>| {
-                *(counter.borrow_mut()) = Some(v.len());
+                counter.replace(Some(v.len()));
             }));
         }
 
@@ -179,5 +202,49 @@ mod test {
         obs.set("hallo".into());
         assert_eq!(*counter_durable.borrow(), Some(2));
         assert_eq!(*counter_once.borrow(), Some(1));
+    }
+
+    #[test]
+    fn observable_on_cleanup() {
+        let obs = Observable::new(5);
+
+        let count = Rc::new(Cell::new(0));
+        let f = {
+            let count = count.clone();
+            move || {
+                count.set(1);
+                drop(count);
+            }
+        };
+        let clean_up: Box<dyn FnOnce()> = Box::new(f);
+        obs.on_cleanup(clean_up);
+
+        assert_eq!(count.get(), 0);
+        obs.set(1);
+        assert_eq!(count.get(), 0);
+        obs.clean_up();
+        assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn observable_on_cleanup_by_drop() {
+        let obs = Observable::new(5);
+
+        let count = Rc::new(Cell::new(0));
+        let f = {
+            let count = count.clone();
+            move || {
+                count.set(1);
+                drop(count);
+            }
+        };
+        let clean_up: Box<dyn FnOnce()> = Box::new(f);
+        obs.on_cleanup(clean_up);
+
+        assert_eq!(count.get(), 0);
+        obs.set(1);
+        assert_eq!(count.get(), 0);
+        drop(obs);
+        assert_eq!(count.get(), 1);
     }
 }
