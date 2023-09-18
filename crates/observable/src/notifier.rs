@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{OnceCell, RefCell},
+    mem,
+    rc::Rc,
+};
 
 pub struct Notifier<T>(RefCell<ListenerSet<T>>);
 
@@ -20,11 +24,17 @@ impl<T> Notifier<T> {
     pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
         self.0.borrow_mut().subscribe(Listener::Durable(cb.into()))
     }
-    pub fn once(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
+    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> ListenerHandle {
         self.0.borrow_mut().subscribe(Listener::Once(cb))
+    }
+    pub fn on_cleanup(&self, clean_up: CleanUp) {
+        self.0.borrow_mut().subscribe(Listener::OnCleanUp(clean_up));
     }
     pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
         self.0.borrow_mut().unsubscribe(handle)
+    }
+    pub(crate) fn clean_up(&self) {
+        self.0.borrow_mut().items.clear();
     }
 }
 
@@ -42,6 +52,22 @@ impl<T> Default for ListenerSet<T> {
     }
 }
 
+pub struct CleanUp(OnceCell<Box<dyn FnOnce()>>);
+
+impl From<Box<dyn FnOnce()>> for CleanUp {
+    fn from(value: Box<dyn FnOnce()>) -> Self {
+        CleanUp(OnceCell::from(value))
+    }
+}
+
+impl Drop for CleanUp {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+
 struct ListenerItem<T> {
     /// Monotonic id for use in the binary search
     id: usize,
@@ -52,37 +78,22 @@ impl<T> ListenerSet<T> {
     fn working_set(&mut self) -> WorkingSet<T> {
         // It's possible to add listeners while we are firing a listener
         // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
-        let mut working_set: Vec<Listener<T>> = Vec::with_capacity(self.items.len());
+        let mut working_set: Vec<WorkingItem<T>> = Vec::with_capacity(self.items.len());
 
-        let first_once_pos = 'first_once_pos: {
-            for (index, item) in self.items.iter().enumerate() {
-                match &item.listener {
-                    Listener::Once(_) => break 'first_once_pos Some(index),
-                    Listener::Durable(f) => {
-                        working_set.push(Listener::Durable(f.clone()));
-                    }
+        self.items.retain_mut(|item| match &item.listener {
+            Listener::Once(_) => {
+                if let Listener::Once(f) = mem::replace(&mut item.listener, Listener::None) {
+                    working_set.push(WorkingItem::Once(f));
                 }
+                false
             }
-            None
-        };
-
-        // only moves durables if necessary while fills the working_set
-        if let Some(first_once_pos) = first_once_pos {
-            let items = unsafe {
-                let items = &mut self.items as *mut Vec<ListenerItem<T>>;
-                (*items).drain(first_once_pos..)
-            };
-
-            for item in items {
-                match &item.listener {
-                    Listener::Once(_) => working_set.push(item.listener),
-                    Listener::Durable(f) => {
-                        working_set.push(Listener::Durable(f.clone()));
-                        self.items.push(item);
-                    }
-                }
+            Listener::Durable(f) => {
+                working_set.push(WorkingItem::Durable(f.clone()));
+                true
             }
-        }
+            Listener::OnCleanUp(_) => true,
+            Listener::None => false,
+        });
 
         WorkingSet(working_set)
     }
@@ -98,7 +109,7 @@ impl<T> ListenerSet<T> {
         // Find the current listener offset
         match self.items.binary_search_by(|probe| probe.id.cmp(&handle.0)) {
             Ok(offset) => {
-                self.items.remove(offset);
+                self.items[offset].listener = Listener::None;
                 true
             }
             Err(_) => false,
@@ -107,20 +118,28 @@ impl<T> ListenerSet<T> {
 }
 
 pub enum Listener<T> {
-    Once(Box<dyn Fn(&T)>),
+    Once(Box<dyn FnOnce(&T)>),
+    Durable(Rc<dyn Fn(&T)>),
+    OnCleanUp(CleanUp),
+    None,
+}
+
+pub enum WorkingItem<T> {
+    Once(Box<dyn FnOnce(&T)>),
     Durable(Rc<dyn Fn(&T)>),
 }
 
+#[derive(Debug, Clone)]
 pub struct ListenerHandle(usize);
 
-pub(crate) struct WorkingSet<T>(Vec<Listener<T>>);
+pub(crate) struct WorkingSet<T>(Vec<WorkingItem<T>>);
 
 impl<T> WorkingSet<T> {
     pub(crate) fn notify(self, value: &T) {
         for listener in self.0 {
             match listener {
-                Listener::Once(f) => f(value),
-                Listener::Durable(f) => f(value),
+                WorkingItem::Once(f) => f(value),
+                WorkingItem::Durable(f) => f(value),
             }
         }
     }
