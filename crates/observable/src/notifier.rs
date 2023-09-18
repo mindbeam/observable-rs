@@ -1,8 +1,4 @@
-use std::{
-    cell::{OnceCell, RefCell},
-    mem,
-    rc::Rc,
-};
+use std::{cell::RefCell, mem, rc::Rc};
 
 pub struct Notifier<T>(RefCell<ListenerSet<T>>);
 
@@ -30,11 +26,20 @@ impl<T> Notifier<T> {
     pub fn on_cleanup(&self, clean_up: CleanUp) {
         self.0.borrow_mut().subscribe(Listener::OnCleanUp(clean_up));
     }
+    pub(crate) fn on_mapped_obs_unsubscribe(&self, clean_up: CleanUp) {
+        self.0
+            .borrow_mut()
+            .subscribe(Listener::MapObsUnsubscription(clean_up));
+    }
     pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
         self.0.borrow_mut().unsubscribe(handle)
     }
     pub(crate) fn clean_up(&self) {
         self.0.borrow_mut().items.clear();
+    }
+
+    pub(crate) fn unsubscribe_mapped_obs(&self) {
+        self.0.borrow_mut().unsubscribe_mapped_obs()
     }
 }
 
@@ -52,11 +57,11 @@ impl<T> Default for ListenerSet<T> {
     }
 }
 
-pub struct CleanUp(OnceCell<Box<dyn FnOnce()>>);
+pub struct CleanUp(Option<Box<dyn FnOnce()>>);
 
 impl From<Box<dyn FnOnce()>> for CleanUp {
     fn from(value: Box<dyn FnOnce()>) -> Self {
-        CleanUp(OnceCell::from(value))
+        CleanUp(Some(value))
     }
 }
 
@@ -92,6 +97,7 @@ impl<T> ListenerSet<T> {
                 true
             }
             Listener::OnCleanUp(_) => true,
+            Listener::MapObsUnsubscription(_) => true,
             Listener::None => false,
         });
 
@@ -115,12 +121,28 @@ impl<T> ListenerSet<T> {
             Err(_) => false,
         }
     }
+
+    fn unsubscribe_mapped_obs(&mut self) {
+        self.items.retain_mut(|item| match &item.listener {
+            Listener::MapObsUnsubscription(_) => {
+                if let Listener::MapObsUnsubscription(cleanup) =
+                    mem::replace(&mut item.listener, Listener::None)
+                {
+                    drop(cleanup);
+                }
+                false
+            }
+            Listener::None => false,
+            _ => true,
+        })
+    }
 }
 
 pub enum Listener<T> {
     Once(Box<dyn FnOnce(&T)>),
     Durable(Rc<dyn Fn(&T)>),
     OnCleanUp(CleanUp),
+    MapObsUnsubscription(CleanUp),
     None,
 }
 
