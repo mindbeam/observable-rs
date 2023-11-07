@@ -24,7 +24,7 @@ pub fn create_rust_thing() -> RustThing {
 }
 
 #[wasm_bindgen]
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct RustThing {
     things: usize,
     list: Observable<List<String>>,
@@ -37,7 +37,7 @@ impl RustThing {
         self.list.push(format!("Thing {}", self.things));
     }
     pub fn get_the_list(&self) -> JsObservable {
-        let list = self.list.clone();
+        let list = self.list.reader();
         list.into()
     }
 }

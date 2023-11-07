@@ -2,7 +2,7 @@ use std::cell::Ref;
 
 use dyn_clone::DynClone;
 use js_sys::Function;
-use observable_rs::{ListenerHandle, Observable};
+use observable_rs::{CleanUp, Reader, ValueReader};
 // use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 
@@ -27,15 +27,13 @@ pub trait JsObserve: DynClone {
         ar.into()
     }
 
-    fn unsubscribe(&self, handle: ListenerHandle) -> bool;
-
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle;
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle;
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp>;
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp>;
 }
 
-impl<T> JsObserve for Observable<T>
+impl<T> JsObserve for ValueReader<T>
 where
-    T: Into<JsValue> + Clone,
+    T: Into<JsValue> + Clone + 'static,
 {
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
@@ -43,20 +41,16 @@ where
         (*a).clone().into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Observable::subscribe(self, Box::new(move |v: &T| cb(v.clone().into())))
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
+        Reader::subscribe(self, Box::new(move |v: &T| cb(v.clone().into()))).map(|sub| sub.into())
     }
 
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Observable::once(self, Box::new(move |v: &T| cb(v.clone().into())))
-    }
-
-    fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        Observable::unsubscribe(self, handle)
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
+        Reader::once(self, Box::new(move |v: &T| cb(v.clone().into()))).map(|sub| sub.into())
     }
 }
 
-impl<T> JsObserve for Observable<List<T>>
+impl<T: 'static> JsObserve for ValueReader<List<T>>
 where
     T: Into<JsValue> + Clone,
 {
@@ -66,15 +60,11 @@ where
         (&*a).into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Observable::subscribe(self, Box::new(move |v: &List<T>| cb(v.into())))
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
+        Reader::subscribe(self, Box::new(move |v: &List<T>| cb(v.into()))).map(|sub| sub.into())
     }
 
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> ListenerHandle {
-        Observable::once(self, Box::new(move |v: &List<T>| cb(v.into())))
-    }
-
-    fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        Observable::unsubscribe(self, handle)
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
+        Reader::once(self, Box::new(move |v: &List<T>| cb(v.into()))).map(|sub| sub.into())
     }
 }

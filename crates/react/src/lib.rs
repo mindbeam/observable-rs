@@ -48,7 +48,7 @@ use wasm_bindgen::{prelude::*, JsValue};
 /// }
 ///
 /// let obs = Observable::new(CatState::new(1));
-/// let obsJs: JsObservable = obs.clone().into();
+/// let obsJs: JsObservable = obs.reader().into();
 /// let lastRustCats: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 /// let lrc = lastRustCats.clone();
 /// obs.subscribe(Box::new(move |v|{
@@ -65,10 +65,10 @@ use wasm_bindgen::{prelude::*, JsValue};
 ///
 /// // Both Rust Cats and JS Cats logs are printed
 ///
-/// let barObsJs: JsObservable = Observable::new(Bar::default()).into();
-/// let strObsJs: JsObservable = Observable::new(String::from("Meow")).into();
-/// let intObsJs: JsObservable = Observable::new(123).into();
-/// let fltObsJs: JsObservable = Observable::new(123.0).into();
+/// let barObsJs: JsObservable = Observable::new(Bar::default()).reader().into();
+/// let strObsJs: JsObservable = Observable::new(String::from("Meow")).reader().into();
+/// let intObsJs: JsObservable = Observable::new(123).reader().into();
+/// let fltObsJs: JsObservable = Observable::new(123.0).reader().into();
 /// ```
 #[wasm_bindgen]
 pub struct JsObservable {
@@ -94,16 +94,11 @@ impl JsObservable {
         cb: js_sys::Function,
         // TODO: ChangeContext contract from TS?
     ) -> js_sys::Function {
-        let handle = self.obs.subscribe(Box::new(move |v: JsValue| {
+        let clean_up = self.obs.subscribe(Box::new(move |v: JsValue| {
             cb.call1(&JsValue::UNDEFINED, &v).unwrap();
         }));
 
-        // Make a copy that the closure can hold on to
-        let obs = dyn_clone::clone_box(&*self.obs);
-
-        let unsub = Closure::once_into_js(Box::new(move || {
-            obs.unsubscribe(handle);
-        }) as Box<dyn FnOnce()>);
+        let unsub = Closure::once_into_js(Box::new(move || drop(clean_up)) as Box<dyn FnOnce()>);
 
         unsub.into()
     }

@@ -1,39 +1,40 @@
 use std::cell::{Ref, RefCell};
-use std::rc::{Rc, Weak};
+use std::ops::Deref;
+use std::rc::Rc;
 
-use crate::notifier::{CleanUp, ListenerHandle, Notifier};
+use crate::listener_set::{ListenerSet, Reader, Subscription};
+use crate::CleanUp;
 
 pub struct Observable<T, const E: bool = true> {
     value: Rc<RefCell<T>>,
-    notifier: Rc<Notifier<T>>,
+    listener_set: ListenerSet<T>,
 }
 
-pub struct Reader<T> {
+pub struct ValueReader<T> {
     value: Rc<RefCell<T>>,
-    notifier: Weak<Notifier<T>>,
+    reader: Reader<T>,
 }
 
-impl<T> Reader<T> {
+impl<T> ValueReader<T> {
     pub fn get(&self) -> Ref<T> {
         self.value.borrow()
     }
+    pub fn reader(&self) -> Reader<T> {
+        self.reader.clone()
+    }
 }
+impl<T> Deref for ValueReader<T> {
+    type Target = Reader<T>;
 
-impl<T> Clone for Reader<T> {
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+impl<T> Clone for ValueReader<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            notifier: self.notifier.clone(),
-        }
-    }
-}
-
-// Implemented manually because `T` does not need to be Clone
-impl<T, const E: bool> Clone for Observable<T, E> {
-    fn clone(&self) -> Self {
-        Observable {
-            value: self.value.clone(),
-            notifier: self.notifier.clone(),
+            reader: self.reader.clone(),
         }
     }
 }
@@ -42,14 +43,18 @@ impl<T> Observable<T, true> {
     pub fn new(value: T) -> Self {
         Self {
             value: Rc::new(RefCell::new(value)),
-            notifier: Rc::default(),
+            listener_set: ListenerSet::default(),
         }
     }
 
-    pub fn reader(&self) -> Reader<T> {
-        Reader {
+    // pub fn value(initial_value: T) -> (Writer<T>, Value<T>) {
+
+    // }
+
+    pub fn reader(&self) -> ValueReader<T> {
+        ValueReader {
             value: self.value.clone(),
-            notifier: Rc::downgrade(&self.notifier),
+            reader: self.listener_set.reader(),
         }
     }
 }
@@ -60,7 +65,7 @@ impl<T> Observable<T, true> {
     pub fn set(&self, value: T) {
         self.value.replace(value);
         let r = self.value.borrow();
-        self.notifier.notify(&r);
+        self.listener_set.notify(&r);
     }
 }
 
@@ -69,28 +74,24 @@ impl<T, const E: bool> Observable<T, E> {
         self.value.borrow()
     }
 
-    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        self.notifier.subscribe(cb)
+    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> Subscription<T> {
+        self.listener_set.subscribe(cb)
     }
-    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> ListenerHandle {
-        self.notifier.once(cb)
+    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> Subscription<T> {
+        self.listener_set.once(cb)
     }
 
     pub fn on_cleanup(&self, clean_up: impl Into<CleanUp>) {
-        self.notifier.on_cleanup(clean_up.into())
-    }
-
-    pub fn unsubscribe(&self, handle: ListenerHandle) -> bool {
-        self.notifier.unsubscribe(handle)
+        self.listener_set.on_cleanup(clean_up.into())
     }
 
     pub fn clean_up(&self) {
-        self.notifier.clean_up()
+        self.listener_set.clean_up()
     }
 }
 
 type MapFn<T, R> = Box<dyn Fn(&T) -> R>;
-type MapWeakObsFn<T, R> = MapFn<T, Reader<R>>;
+type MapReaderFn<T, R> = MapFn<T, ValueReader<R>>;
 type MapObsFn<T, R> = MapFn<T, Observable<R, false>>;
 
 impl<T: 'static> Observable<T, false> {
@@ -98,13 +99,11 @@ impl<T: 'static> Observable<T, false> {
         let initial_value = { f(&self.get()) };
         let mapped_obs = Observable::new(initial_value);
 
-        let mapped_weak = mapped_obs.reader();
-        let self_notifier = self.notifier;
+        let mapped_writer = mapped_obs.listener_set.writer();
+        let self_notifier = self.listener_set;
         self_notifier.subscribe(Box::new(move |value| {
             let mapped = f(value);
-            if let Some(notifier) = mapped_weak.notifier.upgrade() {
-                notifier.notify(&mapped);
-            }
+            mapped_writer.write(&mapped);
         }));
         let clean_up: Box<dyn FnOnce()> = Box::new(move || {
             drop(self_notifier);
@@ -114,30 +113,30 @@ impl<T: 'static> Observable<T, false> {
         mapped_obs.into()
     }
 
-    pub fn map_weak_obs<R: Clone + 'static>(self, f: MapWeakObsFn<T, R>) -> Observable<R, false> {
+    pub fn map_reader<R: Clone + 'static>(self, f: MapReaderFn<T, R>) -> Observable<R, false> {
         let middle_obs = { f(&self.get()) };
         let initial_value = { middle_obs.get().clone() };
         let mapped_obs = Observable::new(initial_value);
 
-        if let Some(clean_up) = mapped_obs.reader().subscribe_reader(middle_obs.notifier) {
-            mapped_obs.notifier.on_mapped_obs_unsubscribe(clean_up)
+        if let Some(sub) = mapped_obs.reader().subscribe_reader(middle_obs.reader) {
+            mapped_obs.listener_set.on_mapped_obs_unsubscribe(sub)
         }
 
-        let mapped_weak = mapped_obs.reader();
+        let mapped_reader = mapped_obs.reader();
 
-        self.notifier.subscribe(Box::new(move |value: &T| {
-            if let Some(mapped_notifier) = mapped_weak.notifier.upgrade() {
-                mapped_notifier.unsubscribe_mapped_obs();
+        self.listener_set.subscribe(Box::new(move |value: &T| {
+            if let Some(mapped_notifier) = mapped_reader.parent() {
+                mapped_notifier.cleanup_downstreams();
                 let middle_obs = { f(value) };
-                mapped_weak.value.replace(middle_obs.get().clone());
-                if let Some(clean_up) = mapped_weak.clone().subscribe_reader(middle_obs.notifier) {
+                mapped_reader.value.replace(middle_obs.get().clone());
+                if let Some(clean_up) = mapped_reader.clone().subscribe_reader(middle_obs.reader) {
                     mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
                 }
             }
         }));
 
         let clean_up: Box<dyn FnOnce()> = Box::new(move || {
-            drop(self.notifier);
+            drop(self.listener_set);
         });
         mapped_obs.on_cleanup(clean_up);
 
@@ -148,31 +147,29 @@ impl<T: 'static> Observable<T, false> {
         let initial_mapped_obs = { f(&self.get()) };
         let mapped_obs: Observable<R> = Observable {
             value: initial_mapped_obs.value,
-            notifier: Rc::default(),
+            listener_set: ListenerSet::default(),
         };
 
-        let mapped_obs_notifier = Rc::downgrade(&mapped_obs.notifier);
-        let handle = initial_mapped_obs
-            .notifier
+        let mapped_obs_writer = mapped_obs.listener_set.writer();
+        let sub = initial_mapped_obs
+            .listener_set
             .subscribe(Box::new(move |value| {
-                if let Some(notifier) = mapped_obs_notifier.upgrade() {
-                    notifier.notify(value);
-                }
+                mapped_obs_writer.write(value);
             }));
         mapped_obs
-            .notifier
-            .on_mapped_obs_unsubscribe((&mapped_obs.notifier, handle).into());
+            .listener_set
+            .on_mapped_obs_unsubscribe(sub.into());
 
         let mapped_reader = mapped_obs.reader();
 
-        self.notifier.subscribe(Box::new(move |value: &T| {
-            if let Some(mapped_notifier) = mapped_reader.notifier.upgrade() {
-                mapped_notifier.unsubscribe_mapped_obs();
+        self.listener_set.subscribe(Box::new(move |value: &T| {
+            if let Some(mapped_notifier) = mapped_reader.parent() {
+                mapped_notifier.cleanup_downstreams();
                 let middle_obs = { f(value) };
                 mapped_reader.value.replace(middle_obs.get().clone());
                 if let Some(clean_up) = mapped_reader
                     .clone()
-                    .subscribe_reader(Rc::downgrade(&middle_obs.notifier))
+                    .subscribe_reader(middle_obs.listener_set.reader())
                 {
                     mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
                 }
@@ -180,7 +177,7 @@ impl<T: 'static> Observable<T, false> {
         }));
 
         let clean_up: Box<dyn FnOnce()> = Box::new(move || {
-            drop(self.notifier);
+            drop(self.listener_set);
         });
         mapped_obs.on_cleanup(clean_up);
 
@@ -192,14 +189,17 @@ impl<T, V> Observable<V, true>
 where
     V: Pushable<Value = T>,
 {
-    pub fn push(&self, item: T) {
+    pub fn push(&self, item: T)
+    where
+        T: 'static,
+    {
         {
             let mut ref_mut = self.value.borrow_mut();
             let vec = &mut *ref_mut;
             vec.push(item);
         }
 
-        self.notifier.notify(&self.value.borrow());
+        self.listener_set.notify(&self.value.borrow());
     }
 }
 
@@ -224,7 +224,7 @@ impl<T> Pushable for Vec<T> {
     }
 }
 
-impl<T: 'static> Reader<T> {
+impl<T: 'static> ValueReader<T> {
     pub fn map_value<R: 'static>(self, f: MapFn<T, R>) -> Observable<R, false> {
         let initial_value = { f(&self.get()) };
         let mapped_obs = Observable::new(initial_value);
@@ -237,81 +237,64 @@ impl<T: 'static> Reader<T> {
         mapped_obs.into()
     }
 
-    pub fn map_reader<R: Clone + 'static>(self, f: MapWeakObsFn<T, R>) -> Observable<R, false> {
+    pub fn map_reader<R: Clone + 'static>(self, f: MapReaderFn<T, R>) -> Observable<R, false> {
         let middle_obs = { f(&self.get()) };
         let initial_value = { middle_obs.get().clone() };
         let mapped_obs = Observable::new(initial_value);
 
-        if let Some(clean_up) = mapped_obs.reader().subscribe_reader(middle_obs.notifier) {
-            mapped_obs.notifier.on_mapped_obs_unsubscribe(clean_up)
+        if let Some(clean_up) = mapped_obs.reader().subscribe_reader(middle_obs.reader) {
+            mapped_obs.listener_set.on_mapped_obs_unsubscribe(clean_up)
         }
 
-        let mapped_weak = mapped_obs.reader();
+        let mapped_reader = mapped_obs.reader();
 
-        if let Some(self_notifier) = self.notifier.upgrade() {
-            let handle = self_notifier.subscribe(Box::new(move |value: &T| {
-                if let Some(mapped_notifier) = mapped_weak.notifier.upgrade() {
-                    mapped_notifier.unsubscribe_mapped_obs();
+        if let Some(self_listener_set) = self.reader.parent() {
+            let sub = self_listener_set.subscribe(Box::new(move |value: &T| {
+                if let Some(mapped_notifier) = mapped_reader.parent() {
+                    mapped_notifier.cleanup_downstreams();
                     let middle_obs = { f(value) };
-                    mapped_weak.value.replace(middle_obs.get().clone());
+                    mapped_reader.value.replace(middle_obs.get().clone());
                     if let Some(clean_up) =
-                        mapped_weak.clone().subscribe_reader(middle_obs.notifier)
+                        mapped_reader.clone().subscribe_reader(middle_obs.reader)
                     {
                         mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
                     }
                 }
             }));
 
-            mapped_obs.on_cleanup((&self_notifier, handle));
+            mapped_obs.on_cleanup(sub);
         }
 
         mapped_obs.into()
     }
 
-    fn subscribe_reader(self, reader_notifier: Weak<Notifier<T>>) -> Option<CleanUp>
+    fn subscribe_reader(self, reader: Reader<T>) -> Option<CleanUp>
     where
         T: Clone,
     {
-        let notifier = reader_notifier.upgrade()?;
-        let handle = notifier.subscribe(Box::new(move |value: &T| {
-            if let Some(notifier) = self.notifier.upgrade() {
-                self.value.replace(value.clone());
-                notifier.notify(&self.value.borrow());
-            }
-        }));
+        let sub = reader.subscribe(Box::new(move |value: &T| {
+            self.value.replace(value.clone());
+            self.reader.writer().write(&self.value.borrow());
+        }))?;
 
-        Some((&notifier, handle).into())
+        Some(sub.into())
     }
 
     fn subscribe_mapped_reader<In: 'static>(
         self,
-        reader: Reader<In>,
+        value_reader: ValueReader<In>,
         f: MapFn<In, T>,
     ) -> Option<CleanUp> {
-        let notifier = reader.notifier.upgrade()?;
-        let handle = notifier.subscribe(Box::new(move |value: &In| {
-            if let Some(notifier) = self.notifier.upgrade() {
+        let writer = self.writer();
+        let sub = value_reader.subscribe(Box::new(move |value: &In| {
+            if let Some(working_set) = writer.working_set() {
                 let mapped = f(value);
                 self.value.replace(mapped);
-                notifier.notify(&self.value.borrow());
+                working_set.notify(&self.value.borrow());
             }
-        }));
+        }))?;
 
-        Some((&notifier, handle).into())
-    }
-}
-
-impl<T: 'static> From<(&Rc<Notifier<T>>, ListenerHandle)> for CleanUp {
-    fn from((notifier, handle): (&Rc<Notifier<T>>, ListenerHandle)) -> Self {
-        let weak_notifier = Rc::downgrade(notifier);
-
-        let f: Box<dyn FnOnce()> = Box::new(move || {
-            if let Some(notifier) = weak_notifier.upgrade() {
-                notifier.unsubscribe(handle);
-            }
-        });
-
-        CleanUp::from(f)
+        Some(sub.into())
     }
 }
 
@@ -319,14 +302,14 @@ impl<T> From<Observable<T, true>> for Observable<T, false> {
     fn from(obs: Observable<T>) -> Self {
         Observable {
             value: obs.value,
-            notifier: obs.notifier,
+            listener_set: obs.listener_set,
         }
     }
 }
 
 pub enum MapObsResult<T> {
     Value(T),
-    Weak(Reader<T>),
+    Weak(ValueReader<T>),
     Obs(Observable<T, false>),
 }
 
