@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    mem,
     ops::Deref,
     rc::{Rc, Weak},
 };
@@ -27,15 +26,6 @@ impl<T> ListenerSet<T> {
     }
     pub fn reader(&self) -> Reader<T> {
         Reader(Rc::downgrade(&self.0))
-    }
-
-    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> Subscription<T> {
-        let handle = self.0.subscribe(cb);
-        Subscription::new(self.writer(), handle)
-    }
-    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> Subscription<T> {
-        let handle = self.0.once(cb);
-        Subscription::new(self.writer(), handle)
     }
 }
 
@@ -69,32 +59,36 @@ impl<T> ListenerSetBase<T> {
     pub(crate) fn cleanup_downstreams(&self) {
         self.0.borrow_mut().cleanup_downstreams()
     }
-    fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> ListenerHandle {
-        self.0.borrow_mut().subscribe(Listener::Durable(cb.into()))
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription<T> {
+        let cb: Rc<dyn FnMut(&T)> = Rc::new(cb);
+        self.0
+            .borrow_mut()
+            .subscribe(Listener::Durable(Rc::downgrade(&cb)));
+        Subscription::new(cb)
     }
-    fn once(&self, cb: Box<dyn FnOnce(&T)>) -> ListenerHandle {
-        self.0.borrow_mut().subscribe(Listener::Once(cb))
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription<T> {
+        let mut cb = Some(cb);
+        let cb = move |val: &T| {
+            if let Some(f) = cb.take() {
+                f(val);
+            }
+        };
+        let cb: Rc<dyn FnMut(&T)> = Rc::new(cb);
+        self.0
+            .borrow_mut()
+            .subscribe(Listener::Once(Rc::downgrade(&cb)));
+        Subscription::new(cb)
     }
 }
 
 struct Inner<T> {
-    nextid: usize,
-    items: Vec<ListenerItem<T>>,
+    items: Vec<Listener<T>>,
 }
 
 impl<T> Default for Inner<T> {
     fn default() -> Self {
-        Inner {
-            nextid: 0,
-            items: Vec::new(),
-        }
+        Inner { items: Vec::new() }
     }
-}
-
-struct ListenerItem<T> {
-    /// Monotonic id for use in the binary search
-    id: usize,
-    listener: Listener<T>,
 }
 
 impl<T> Inner<T> {
@@ -103,84 +97,67 @@ impl<T> Inner<T> {
         // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
         let mut working_set: Vec<WorkingItem<T>> = Vec::with_capacity(self.items.len());
 
-        self.items.retain_mut(|item| match &item.listener {
-            Listener::Once(_) => {
-                if let Listener::Once(f) = mem::replace(&mut item.listener, Listener::None) {
-                    working_set.push(WorkingItem::Once(f));
+        self.items.retain_mut(|item| match &item {
+            Listener::Once(f) => {
+                if f.upgrade().is_some() {
+                    working_set.push(f.clone());
                 }
                 false
             }
-            Listener::Durable(f) => {
-                working_set.push(WorkingItem::Durable(f.clone()));
-                true
-            }
+            Listener::Durable(f) => match f.upgrade() {
+                Some(_) => {
+                    working_set.push(f.clone());
+                    true
+                }
+                None => false,
+            },
             Listener::OnCleanUp(_) => true,
             Listener::Downstream(_) => true,
-            Listener::None => false,
         });
 
-        WorkingSet(working_set)
+        WorkingSet::new(working_set)
     }
 
-    pub fn subscribe(&mut self, listener: Listener<T>) -> ListenerHandle {
-        let id = self.nextid;
-        self.nextid += 1;
-        self.items.push(ListenerItem { id, listener });
-        ListenerHandle(id)
-    }
-
-    pub fn unsubscribe(&mut self, handle: ListenerHandle) -> bool {
-        // Find the current listener offset
-        match self.items.binary_search_by(|probe| probe.id.cmp(&handle.0)) {
-            Ok(offset) => {
-                self.items[offset].listener = Listener::None;
-                true
-            }
-            Err(_) => false,
-        }
+    pub fn subscribe(&mut self, listener: Listener<T>) {
+        self.items.push(listener);
     }
 
     fn cleanup_downstreams(&mut self) {
-        self.items.retain_mut(|item| match &item.listener {
-            Listener::Downstream(_) => {
-                if let Listener::Downstream(cleanup) =
-                    mem::replace(&mut item.listener, Listener::None)
-                {
-                    drop(cleanup);
-                }
-                false
-            }
-            Listener::None => false,
-            _ => true,
-        })
+        self.items
+            .retain_mut(|item| !matches!(item, Listener::Downstream(_)))
     }
 }
 
 // Reader needs to keep this alive. That's basically it
 enum Listener<T> {
-    Once(Box<dyn FnOnce(&T)>),
-    Durable(Rc<dyn Fn(&T)>),
+    Once(Weak<dyn FnMut(&T)>),
+    Durable(Weak<dyn FnMut(&T)>),
     OnCleanUp(CleanUp),
     Downstream(CleanUp),
-    None, // HACK for cleaning memory
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ListenerHandle(usize);
 
-pub enum WorkingItem<T> {
-    Once(Box<dyn FnOnce(&T)>),
-    Durable(Rc<dyn Fn(&T)>),
-}
+pub type WorkingItem<T> = Weak<dyn FnMut(&T)>;
 
-pub struct WorkingSet<T>(Vec<WorkingItem<T>>);
+pub struct WorkingSet<T> {
+    items: Vec<WorkingItem<T>>,
+}
+impl<T> WorkingSet<T> {
+    pub(crate) fn new(items: Vec<WorkingItem<T>>) -> Self {
+        WorkingSet { items }
+    }
+}
 
 impl<T> WorkingSet<T> {
     pub(crate) fn notify(self, value: &T) {
-        for listener in self.0 {
-            match listener {
-                WorkingItem::Once(f) => f(value),
-                WorkingItem::Durable(f) => f(value),
+        for item in self.items {
+            if let Some(rc) = item.upgrade() {
+                unsafe {
+                    let f = Rc::as_ptr(&rc) as *mut dyn FnMut(&T);
+                    (*f)(value);
+                }
             }
         }
     }
@@ -219,12 +196,12 @@ impl<T> Reader<T> {
         Writer(self.0.clone())
     }
 
-    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> Option<Subscription<T>> {
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Option<Subscription<T>> {
         let listener_set = ListenerSet(self.0.upgrade()?);
         let sub = listener_set.subscribe(cb);
         Some(sub)
     }
-    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> Option<Subscription<T>> {
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Option<Subscription<T>> {
         let listener_set = ListenerSet(self.0.upgrade()?);
         let sub = listener_set.once(cb);
         Some(sub)
@@ -235,26 +212,17 @@ impl<T> Reader<T> {
 }
 
 pub struct Subscription<T> {
-    listener_set: Weak<ListenerSetBase<T>>,
-    handle: ListenerHandle,
+    #[allow(dead_code)]
+    cb: Rc<dyn FnMut(&T)>,
 }
 impl<T> Subscription<T> {
-    pub fn new(writer: Writer<T>, handle: ListenerHandle) -> Self {
-        Self {
-            listener_set: writer.0,
-            handle,
-        }
-    }
-    pub fn cancel(&self) {
-        if let Some(inner) = self.listener_set.upgrade() {
-            inner.0.borrow_mut().unsubscribe(self.handle);
-        }
+    pub fn new(cb: Rc<dyn FnMut(&T)>) -> Self {
+        Self { cb }
     }
 }
 impl<T: 'static> From<Subscription<T>> for CleanUp {
     fn from(subscription: Subscription<T>) -> Self {
         let cb = move || {
-            subscription.cancel();
             drop(subscription);
         };
         let f: Box<dyn FnOnce()> = Box::new(cb);
