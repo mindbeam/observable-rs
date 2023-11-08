@@ -10,8 +10,12 @@ pub struct Observable<T, const E: bool = true> {
     listener_set: ListenerSet<T>,
 }
 
+/// ValueReader is a handle to read the present value of an Observable
+/// It does NOT keep that observable alive, but whenever that observable drops,
+/// we will keep a copy of its last value
 pub struct ValueReader<T> {
     value: Rc<RefCell<T>>,
+    // Don't understand this part yet
     reader: Reader<T>,
 }
 
@@ -74,10 +78,10 @@ impl<T, const E: bool> Observable<T, E> {
         self.value.borrow()
     }
 
-    pub fn subscribe(&self, cb: Box<dyn Fn(&T)>) -> Subscription<T> {
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription<T> {
         self.listener_set.subscribe(cb)
     }
-    pub fn once(&self, cb: Box<dyn FnOnce(&T)>) -> Subscription<T> {
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription<T> {
         self.listener_set.once(cb)
     }
 
@@ -101,10 +105,10 @@ impl<T: 'static> Observable<T, false> {
 
         let mapped_writer = mapped_obs.listener_set.writer();
         let self_notifier = self.listener_set;
-        self_notifier.subscribe(Box::new(move |value| {
+        self_notifier.subscribe(move |value| {
             let mapped = f(value);
             mapped_writer.write(&mapped);
-        }));
+        });
         let clean_up: Box<dyn FnOnce()> = Box::new(move || {
             drop(self_notifier);
         });
@@ -151,18 +155,16 @@ impl<T: 'static> Observable<T, false> {
         };
 
         let mapped_obs_writer = mapped_obs.listener_set.writer();
-        let sub = initial_mapped_obs
-            .listener_set
-            .subscribe(Box::new(move |value| {
-                mapped_obs_writer.write(value);
-            }));
+        let sub = initial_mapped_obs.listener_set.subscribe(move |value| {
+            mapped_obs_writer.write(value);
+        });
         mapped_obs
             .listener_set
             .on_mapped_obs_unsubscribe(sub.into());
 
         let mapped_reader = mapped_obs.reader();
 
-        self.listener_set.subscribe(Box::new(move |value: &T| {
+        self.listener_set.subscribe(move |value: &T| {
             if let Some(mapped_notifier) = mapped_reader.parent() {
                 mapped_notifier.cleanup_downstreams();
                 let middle_obs = { f(value) };
@@ -174,7 +176,7 @@ impl<T: 'static> Observable<T, false> {
                     mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
                 }
             }
-        }));
+        });
 
         let clean_up: Box<dyn FnOnce()> = Box::new(move || {
             drop(self.listener_set);
@@ -249,7 +251,7 @@ impl<T: 'static> ValueReader<T> {
         let mapped_reader = mapped_obs.reader();
 
         if let Some(self_listener_set) = self.reader.parent() {
-            let sub = self_listener_set.subscribe(Box::new(move |value: &T| {
+            let sub = self_listener_set.subscribe(move |value: &T| {
                 if let Some(mapped_notifier) = mapped_reader.parent() {
                     mapped_notifier.cleanup_downstreams();
                     let middle_obs = { f(value) };
@@ -260,7 +262,7 @@ impl<T: 'static> ValueReader<T> {
                         mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
                     }
                 }
-            }));
+            });
 
             mapped_obs.on_cleanup(sub);
         }
@@ -272,10 +274,10 @@ impl<T: 'static> ValueReader<T> {
     where
         T: Clone,
     {
-        let sub = reader.subscribe(Box::new(move |value: &T| {
+        let sub = reader.subscribe(move |value: &T| {
             self.value.replace(value.clone());
             self.reader.writer().write(&self.value.borrow());
-        }))?;
+        })?;
 
         Some(sub.into())
     }
@@ -330,12 +332,12 @@ mod test {
 
         let counter: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 
-        {
+        let _sub = {
             let counter = counter.clone();
-            obs.subscribe(Box::new(move |v: &Vec<u32>| {
+            obs.subscribe(move |v: &Vec<u32>| {
                 counter.replace(Some(v.len()));
-            }));
-        }
+            })
+        };
 
         assert_eq!(*counter.borrow(), None);
         obs.push(0);
@@ -358,12 +360,12 @@ mod test {
 
         let counter: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 
-        {
+        let _sub = {
             let counter = counter.clone();
             obs.subscribe(Box::new(move |v: &Wrapper<u32>| {
                 *(counter.borrow_mut()) = Some(v.0.len());
-            }));
-        }
+            }))
+        };
 
         assert_eq!(*counter.borrow(), None);
         obs.push(0);
@@ -375,28 +377,28 @@ mod test {
         let obs = Observable::new("hello".to_owned());
 
         let counter_durable: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-        {
+        let _sub_durable = {
             let counter_durable = counter_durable.clone();
-            obs.subscribe(Box::new(move |_: &String| {
+            obs.subscribe(move |_: &String| {
                 let mut ptr = counter_durable.borrow_mut();
                 *ptr = match *ptr {
                     Some(c) => Some(c + 1),
                     None => Some(1),
                 };
-            }));
-        }
+            })
+        };
 
         let counter_once: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-        {
+        let _sub_once = {
             let counter_durable = counter_once.clone();
-            obs.once(Box::new(move |_: &String| {
+            obs.once(move |_: &String| {
                 let mut ptr = counter_durable.borrow_mut();
                 *ptr = match *ptr {
                     Some(_) => unreachable!(),
                     None => Some(1),
                 };
-            }));
-        }
+            })
+        };
 
         assert_eq!(*counter_durable.borrow(), None);
         assert_eq!(*counter_once.borrow(), None);

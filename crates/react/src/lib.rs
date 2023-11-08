@@ -51,10 +51,12 @@ use wasm_bindgen::{prelude::*, JsValue};
 /// let obsJs: JsObservable = obs.reader().into();
 /// let lastRustCats: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 /// let lrc = lastRustCats.clone();
-/// obs.subscribe(Box::new(move |v|{
+///
+/// // subscription must be kept alive
+/// let _sub = obs.subscribe(move |v|{
 ///   *(lrc.borrow_mut()) = Some(v.cats);
 ///   println!("Rust Cats: {}", v.cats);
-/// }));
+/// });
 /// // In JS:
 /// // catStateJs.subscribe(() => console.log(`JS Cats ${catstate.cats}`));
 ///
