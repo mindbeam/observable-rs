@@ -287,7 +287,10 @@ impl<T: 'static> MapReaderContext<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use crate::{Pushable, Subscription, ValueReader};
 
@@ -330,7 +333,7 @@ mod test {
         let _sub = {
             let counter = counter.clone();
             obs.subscribe(Box::new(move |v: &Wrapper<u32>| {
-                *(counter.borrow_mut()) = Some(v.0.len());
+                *((*counter).borrow_mut()) = Some(v.0.len());
             }))
         };
 
@@ -347,7 +350,7 @@ mod test {
         let _sub_durable = {
             let counter_durable = counter_durable.clone();
             obs.subscribe(move |_: &String| {
-                let mut ptr = counter_durable.borrow_mut();
+                let mut ptr = (*counter_durable).borrow_mut();
                 *ptr = match *ptr {
                     Some(c) => Some(c + 1),
                     None => Some(1),
@@ -359,7 +362,7 @@ mod test {
         let _sub_once = {
             let counter_durable = counter_once.clone();
             obs.once(move |_: &String| {
-                let mut ptr = counter_durable.borrow_mut();
+                let mut ptr = (*counter_durable).borrow_mut();
                 *ptr = match *ptr {
                     Some(_) => unreachable!(),
                     None => Some(1),
@@ -408,7 +411,8 @@ mod test {
             }
         }
         pub fn feed(&self) {
-            self.weight_kg.set(*self.weight_kg.value_ref() + 0.1);
+            let new_weight_kg = { *self.weight_kg.value_ref() + 0.1 };
+            self.weight_kg.set(new_weight_kg);
         }
         pub fn weight_kg(&self) -> ValueReader<f32> {
             self.weight_kg.reader()
@@ -423,7 +427,9 @@ mod test {
     fn basic_subscription() {
         struct App {
             rex: Dog,
+            #[allow(dead_code)]
             sub: Subscription,
+            pivot: Rc<Cell<f32>>,
         }
 
         impl App {
@@ -435,16 +441,28 @@ mod test {
                 //           Does it actually make sense to return Option/Result from subscribe?
                 //           What's the difference between the writer going away before vs after we subscribe?
 
+                let pivot: Rc<Cell<f32>> = Rc::default();
+                let pivot1 = pivot.clone();
                 let sub = rex
                     .weight_kg()
-                    .subscribe(move |w| Self::render(*w))
+                    .subscribe(move |w| {
+                        pivot1.set(*w);
+                        Self::render(*w);
+                    })
                     .unwrap();
-                App { rex, sub }
+                App { rex, sub, pivot }
             }
             fn render(w: f32) {
                 println!("Rex weighs {}", w); // or self.sub.value - is the subscription also a reader?
             }
         }
+
+        let app = App::new();
+        assert_eq!(*app.rex.weight_kg.value_ref(), 4.5);
+        assert_eq!(app.pivot.get(), 0.0);
+
+        app.rex.weight_kg.set(6.5);
+        assert_eq!(app.pivot.get(), 6.5);
     }
 
     #[test]
@@ -474,5 +492,10 @@ mod test {
             person_obs.current_dog.value_ref().weight_kg.set(11.0);
         };
         assert_eq!(*dog_mapped_reader.value_ref(), 11.0);
+
+        {
+            person_obs.current_dog.value_ref().feed();
+        };
+        assert_eq!(*dog_mapped_reader.value_ref(), 11.1);
     }
 }
