@@ -33,7 +33,7 @@ impl<T> Observable<T> {
 
     // }
 
-    pub fn reader(&self) -> ValueReader<T> {
+    pub fn value_reader(&self) -> ValueReader<T> {
         ValueReader {
             value: self.value.clone(),
             reader: self.listener_set.reader(),
@@ -47,32 +47,36 @@ impl<T> Observable<T> {
         self.listener_set.notify();
     }
 
-    pub fn value_ref(&self) -> Ref<T> {
+    pub fn value(&self) -> Ref<T> {
         self.value.get()
+    }
+    pub fn value_cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value.get().clone()
     }
 }
 
 impl<T: 'static> Observable<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
-        let value = self.value.clone();
-        self.listener_set.subscribe(move || cb(&value.get()))
+        self.value_reader().subscribe(cb).unwrap()
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
-        let value = self.value.clone();
-        self.listener_set.once(move || cb(&value.get()))
+        self.value_reader().once(cb).unwrap()
     }
 }
 
 impl<T: 'static> Observable<T> {
     pub fn map_value<R: 'static>(&self, f: impl Fn(&T) -> R + 'static) -> MapReader<R> {
-        self.reader().map_value(f)
+        self.value_reader().map_value(f)
     }
 
     pub fn map_reader<R: Clone + 'static>(
         &self,
         f: impl Fn(&T) -> ValueReader<R> + 'static,
     ) -> MapReader<R> {
-        self.reader().map_reader(f)
+        self.value_reader().map_reader(f)
     }
 }
 
@@ -119,21 +123,33 @@ impl<T: 'static> ValueReader<T> {
     }
 }
 
-impl<T: 'static> ValueReader<T> {
-    pub fn value_ref(&self) -> Ref<T> {
+impl<T> ValueReader<T> {
+    pub fn value(&self) -> Ref<T> {
         self.value.get()
     }
-    pub fn value(&self) -> Rc<Value<T>> {
-        self.value.clone()
+    pub fn value_cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value.get().clone()
     }
-
+}
+impl<T: 'static> ValueReader<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Option<Subscription> {
-        let value = self.value.clone();
-        self.reader.subscribe(move || cb(&value.get()))
+        let value = Rc::downgrade(&self.value);
+        self.reader.subscribe(move || {
+            if let Some(value) = value.upgrade() {
+                cb(&value.get())
+            }
+        })
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Option<Subscription> {
-        let value = self.value.clone();
-        self.reader.once(move || cb(&value.get()))
+        let value = Rc::downgrade(&self.value);
+        self.reader.once(move || {
+            if let Some(value) = value.upgrade() {
+                cb(&value.get())
+            }
+        })
     }
 }
 impl<T> Deref for ValueReader<T> {
@@ -194,11 +210,14 @@ impl<T> MapReader<T> {
         }
     }
 
-    pub fn value_ref(&self) -> Ref<T> {
+    pub fn value(&self) -> Ref<T> {
         self.value.get()
     }
-    pub fn value(&self) -> Rc<Value<T>> {
-        self.value.clone()
+    pub fn value_cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value.get().clone()
     }
 
     pub fn value_reader(&self) -> ValueReader<T> {
@@ -209,6 +228,15 @@ impl<T> MapReader<T> {
     }
     pub fn reader(&self) -> Reader {
         self.listener_set.reader()
+    }
+}
+
+impl<T: 'static> MapReader<T> {
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
+        self.value_reader().subscribe(cb).unwrap()
+    }
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
+        self.value_reader().once(cb).unwrap()
     }
 }
 
@@ -385,17 +413,17 @@ mod test {
     #[test]
     fn observable_map() {
         let obs1 = Observable::new(0);
-        let map_reader = obs1.reader().map_value(|n| 2 * n + 1);
+        let map_reader = obs1.value_reader().map_value(|n| 2 * n + 1);
 
         {
-            assert_eq!(*obs1.value_ref(), 0);
-            assert_eq!(*map_reader.value_ref(), 1);
+            assert_eq!(*obs1.value(), 0);
+            assert_eq!(*map_reader.value(), 1);
         }
 
         {
             obs1.set(1);
-            assert_eq!(*obs1.value_ref(), 1);
-            assert_eq!(*map_reader.value_ref(), 3);
+            assert_eq!(*obs1.value(), 1);
+            assert_eq!(*map_reader.value(), 3);
         }
     }
     struct Dog {
@@ -411,11 +439,11 @@ mod test {
             }
         }
         pub fn feed(&self) {
-            let new_weight_kg = { *self.weight_kg.value_ref() + 0.1 };
+            let new_weight_kg = { *self.weight_kg.value() + 0.1 };
             self.weight_kg.set(new_weight_kg);
         }
         pub fn weight_kg(&self) -> ValueReader<f32> {
-            self.weight_kg.reader()
+            self.weight_kg.value_reader()
         }
     }
 
@@ -458,7 +486,7 @@ mod test {
         }
 
         let app = App::new();
-        assert_eq!(*app.rex.weight_kg.value_ref(), 4.5);
+        assert_eq!(*app.rex.weight_kg.value(), 4.5);
         assert_eq!(app.pivot.get(), 0.0);
 
         app.rex.weight_kg.set(6.5);
@@ -473,29 +501,213 @@ mod test {
 
         let dog_mapped_reader = person_obs
             .current_dog
-            .reader()
+            .value_reader()
             .map_reader(|p| p.weight_kg());
-        assert_eq!(*dog_mapped_reader.value_ref(), 4.5);
+        assert_eq!(*dog_mapped_reader.value(), 4.5);
 
         {
-            person_obs.current_dog.value_ref().weight_kg.set(6.7);
+            person_obs.current_dog.value().weight_kg.set(6.7);
         };
-        assert_eq!(*dog_mapped_reader.value_ref(), 6.7);
+        assert_eq!(*dog_mapped_reader.value(), 6.7);
 
         {
             let new_dog = Dog::new(10.0);
             person_obs.current_dog.set(new_dog);
         };
-        assert_eq!(*dog_mapped_reader.value_ref(), 10.0);
+        assert_eq!(*dog_mapped_reader.value(), 10.0);
 
         {
-            person_obs.current_dog.value_ref().weight_kg.set(11.0);
+            person_obs.current_dog.value().weight_kg.set(11.0);
         };
-        assert_eq!(*dog_mapped_reader.value_ref(), 11.0);
+        assert_eq!(*dog_mapped_reader.value(), 11.0);
 
         {
-            person_obs.current_dog.value_ref().feed();
+            person_obs.current_dog.value().feed();
         };
-        assert_eq!(*dog_mapped_reader.value_ref(), 11.1);
+        assert_eq!(*dog_mapped_reader.value(), 11.1);
+    }
+}
+
+#[cfg(test)]
+mod view_mode_example {
+    use std::rc::{Rc, Weak};
+
+    use crate::{MapReader, Observable, ValueReader};
+
+    trait ViewModel {
+        type Parent: ViewModel;
+        fn parent(&self) -> Weak<Self::Parent>;
+    }
+    impl ViewModel for () {
+        type Parent = ();
+        fn parent(&self) -> Weak<Self::Parent> {
+            let rc = Rc::new(());
+            Rc::downgrade(&rc)
+        }
+    }
+
+    struct TopicSpace {
+        member: Rc<Member>,
+        clip_box: Observable<BoundingBox>,
+    }
+    impl ViewModel for TopicSpace {
+        type Parent = ();
+        fn parent(&self) -> Weak<Self::Parent> {
+            let rc = Rc::new(());
+            Rc::downgrade(&rc)
+        }
+    }
+    impl TopicSpace {
+        pub fn new() -> Rc<TopicSpace> {
+            let clip_box = Observable::new(BoundingBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 200.0,
+            });
+            let clip_box_reader = clip_box.value_reader();
+            Rc::new_cyclic(move |weak| TopicSpace {
+                clip_box,
+                member: Member::new(weak.clone(), clip_box_reader),
+            })
+        }
+    }
+
+    struct Member {
+        parent: Weak<TopicSpace>,
+        override_clip_box: Observable<Option<OverrideBoundingBox>>,
+        clip_box: MapReader<BoundingBox>,
+    }
+    impl ViewModel for Member {
+        type Parent = TopicSpace;
+
+        fn parent(&self) -> Weak<Self::Parent> {
+            self.parent.clone()
+        }
+    }
+    impl Member {
+        pub fn new(
+            parent: Weak<TopicSpace>,
+            ts_clip_box_reader: ValueReader<BoundingBox>,
+        ) -> Rc<Member> {
+            let overrive_clip_box = Observable::new(None);
+            let overrive_clip_box_reader = overrive_clip_box.value_reader();
+
+            let this = Member {
+                parent,
+                override_clip_box: overrive_clip_box,
+                clip_box: MapReader::new(move |ctx| {
+                    let ts_clip_box = ctx.track(&ts_clip_box_reader);
+                    let override_boundig_box = ctx.track(&overrive_clip_box_reader);
+                    match override_boundig_box.as_ref() {
+                        Some(override_bounding_box) => {
+                            ts_clip_box.override_with(override_bounding_box)
+                        }
+                        None => ts_clip_box.clone(),
+                    }
+                }),
+            };
+            Rc::new(this)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct BoundingBox {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+    #[derive(Debug, Clone, PartialEq)]
+    struct OverrideBoundingBox {
+        x: Option<f32>,
+        y: Option<f32>,
+        height: Option<f32>,
+        width: Option<f32>,
+    }
+    impl BoundingBox {
+        pub fn override_with(&self, override_bounding_box: &OverrideBoundingBox) -> BoundingBox {
+            BoundingBox {
+                x: override_bounding_box.x.unwrap_or(self.x),
+                y: override_bounding_box.y.unwrap_or(self.y),
+                width: override_bounding_box.width.unwrap_or(self.width),
+                height: override_bounding_box.height.unwrap_or(self.height),
+            }
+        }
+    }
+
+    #[test]
+    fn viewmodel_based_on_observables() {
+        let ts = TopicSpace::new();
+
+        let bb1 = BoundingBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 200.0,
+        };
+
+        {
+            let ts_clip_box = ts.clip_box.value();
+            let member_overrive_clip_box = ts.member.override_clip_box.value();
+            let member_clip_box = ts.member.clip_box.value();
+            assert_eq!(*ts_clip_box, bb1);
+            assert_eq!(*member_overrive_clip_box, None);
+            assert_eq!(*member_clip_box, bb1);
+        }
+
+        let bb2 = BoundingBox {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 200.0,
+        };
+        ts.clip_box.set(bb2.clone());
+        {
+            let ts_clip_box = ts.clip_box.value();
+            let member_overrive_clip_box = ts.member.override_clip_box.value();
+            let member_clip_box = ts.member.clip_box.value();
+            assert_eq!(*ts_clip_box, bb2);
+            assert_eq!(*member_overrive_clip_box, None);
+            assert_eq!(*member_clip_box, bb2);
+        }
+
+        let obb1 = OverrideBoundingBox {
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+        };
+        ts.member.override_clip_box.set(Some(obb1.clone()));
+        {
+            let ts_clip_box = ts.clip_box.value();
+            let member_overrive_clip_box = ts.member.override_clip_box.value();
+            let member_clip_box = ts.member.clip_box.value();
+            assert_eq!(*ts_clip_box, bb2);
+            assert_eq!(*member_overrive_clip_box, Some(obb1.clone()));
+            assert_eq!(*member_clip_box, bb2);
+        }
+
+        let obb2 = OverrideBoundingBox {
+            x: None,
+            y: Some(30.0),
+            width: Some(50.0),
+            height: None,
+        };
+        let bb3 = BoundingBox {
+            x: 10.0,
+            y: 30.0,
+            width: 50.0,
+            height: 200.0,
+        };
+        ts.member.override_clip_box.set(Some(obb2.clone()));
+        {
+            let ts_clip_box = ts.clip_box.value();
+            let member_overrive_clip_box = ts.member.override_clip_box.value();
+            let member_clip_box = ts.member.clip_box.value();
+            assert_eq!(*ts_clip_box, bb2);
+            assert_eq!(*member_overrive_clip_box, Some(obb2.clone()));
+            assert_eq!(*member_clip_box, bb3);
+        }
     }
 }

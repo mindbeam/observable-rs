@@ -5,15 +5,12 @@
 //! ```
 
 /// Public API.
-mod clean_up;
 mod listener_set;
 mod observable;
 mod pushable;
 mod value;
 
 // Reexport of the public API.
-#[doc(inline)]
-pub use crate::clean_up::*;
 #[doc(inline)]
 pub use crate::listener_set::*;
 #[doc(inline)]

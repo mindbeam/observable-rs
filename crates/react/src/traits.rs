@@ -37,7 +37,7 @@ where
 {
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
-        let a: Ref<T> = self.value_ref();
+        let a: Ref<T> = self.value();
         (*a).clone().into()
     }
 
@@ -56,7 +56,7 @@ where
 {
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
-        let a: Ref<List<T>> = self.value_ref();
+        let a: Ref<List<T>> = self.value();
         (&*a).into()
     }
 
