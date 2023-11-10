@@ -2,7 +2,7 @@ use std::cell::Ref;
 
 use dyn_clone::DynClone;
 use js_sys::Function;
-use observable_rs::{CleanUp, Reader, ValueReader};
+use observable_rs::{Subscription, ValueReader};
 // use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 
@@ -27,8 +27,8 @@ pub trait JsObserve: DynClone {
         ar.into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp>;
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp>;
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription>;
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription>;
 }
 
 impl<T> JsObserve for ValueReader<T>
@@ -37,16 +37,16 @@ where
 {
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
-        let a: Ref<T> = self.get();
+        let a: Ref<T> = self.value_ref();
         (*a).clone().into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
-        Reader::subscribe(self, Box::new(move |v: &T| cb(v.clone().into()))).map(|sub| sub.into())
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription> {
+        self.subscribe(move |v: &T| cb(v.clone().into()))
     }
 
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
-        Reader::once(self, Box::new(move |v: &T| cb(v.clone().into()))).map(|sub| sub.into())
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription> {
+        self.once(move |v: &T| cb(v.clone().into()))
     }
 }
 
@@ -56,15 +56,15 @@ where
 {
     // we need to be able provide a JS value (JS only has one value type)
     fn get_js(&self) -> JsValue {
-        let a: Ref<List<T>> = self.get();
+        let a: Ref<List<T>> = self.value_ref();
         (&*a).into()
     }
 
-    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
-        Reader::subscribe(self, Box::new(move |v: &List<T>| cb(v.into()))).map(|sub| sub.into())
+    fn subscribe(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription> {
+        self.subscribe(move |v: &List<T>| cb(v.into()))
     }
 
-    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<CleanUp> {
-        Reader::once(self, Box::new(move |v: &List<T>| cb(v.into()))).map(|sub| sub.into())
+    fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription> {
+        self.once(move |v: &List<T>| cb(v.into()))
     }
 }

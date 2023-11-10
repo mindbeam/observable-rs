@@ -1,52 +1,30 @@
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::ops::Deref;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::listener_set::{ListenerSet, Reader, Subscription};
-use crate::CleanUp;
+use crate::{Pushable, Value};
 
-pub struct Observable<T, const E: bool = true> {
-    value: Rc<RefCell<T>>,
-    listener_set: ListenerSet<T>,
+pub struct Observable<T> {
+    value: Rc<Value<T>>,
+    listener_set: ListenerSet,
 }
 
+/// A reader that stores the present value - regardless of whether the writer is alive or not.
 /// ValueReader is a handle to read the present value of an Observable
 /// It does NOT keep that observable alive, but whenever that observable drops,
 /// we will keep a copy of its last value
 pub struct ValueReader<T> {
-    value: Rc<RefCell<T>>,
-    // Don't understand this part yet
-    reader: Reader<T>,
+    value: Rc<Value<T>>,
+
+    // Why is this here? Used only for cloning the ValueReader?
+    reader: Reader,
 }
 
-impl<T> ValueReader<T> {
-    pub fn get(&self) -> Ref<T> {
-        self.value.borrow()
-    }
-    pub fn reader(&self) -> Reader<T> {
-        self.reader.clone()
-    }
-}
-impl<T> Deref for ValueReader<T> {
-    type Target = Reader<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.reader
-    }
-}
-impl<T> Clone for ValueReader<T> {
-    fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-            reader: self.reader.clone(),
-        }
-    }
-}
-
-impl<T> Observable<T, true> {
+impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
         Self {
-            value: Rc::new(RefCell::new(value)),
+            value: Value::rc(value),
             listener_set: ListenerSet::default(),
         }
     }
@@ -63,131 +41,42 @@ impl<T> Observable<T, true> {
     }
 }
 
-// Observable<T> = Observable<T, true>
-// Observable<T, false> : mapped observable
-impl<T> Observable<T, true> {
+impl<T> Observable<T> {
     pub fn set(&self, value: T) {
-        self.value.replace(value);
-        let r = self.value.borrow();
-        self.listener_set.notify(&r);
+        self.value.set(value);
+        self.listener_set.notify();
+    }
+
+    pub fn value_ref(&self) -> Ref<T> {
+        self.value.get()
     }
 }
 
-impl<T, const E: bool> Observable<T, E> {
-    pub fn get(&self) -> Ref<T> {
-        self.value.borrow()
+impl<T: 'static> Observable<T> {
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
+        let value = self.value.clone();
+        self.listener_set.subscribe(move || cb(&value.get()))
     }
-
-    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription<T> {
-        self.listener_set.subscribe(cb)
-    }
-    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription<T> {
-        self.listener_set.once(cb)
-    }
-
-    pub fn on_cleanup(&self, clean_up: impl Into<CleanUp>) {
-        self.listener_set.on_cleanup(clean_up.into())
-    }
-
-    pub fn clean_up(&self) {
-        self.listener_set.clean_up()
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
+        let value = self.value.clone();
+        self.listener_set.once(move || cb(&value.get()))
     }
 }
 
-type MapFn<T, R> = Box<dyn Fn(&T) -> R>;
-type MapReaderFn<T, R> = MapFn<T, ValueReader<R>>;
-type MapObsFn<T, R> = MapFn<T, Observable<R, false>>;
-
-impl<T: 'static> Observable<T, false> {
-    pub fn map_value<R: 'static>(self, f: MapFn<T, R>) -> Observable<R, false> {
-        let initial_value = { f(&self.get()) };
-        let mapped_obs = Observable::new(initial_value);
-
-        let mapped_writer = mapped_obs.listener_set.writer();
-        let self_notifier = self.listener_set;
-        self_notifier.subscribe(move |value| {
-            let mapped = f(value);
-            mapped_writer.write(&mapped);
-        });
-        let clean_up: Box<dyn FnOnce()> = Box::new(move || {
-            drop(self_notifier);
-        });
-        mapped_obs.on_cleanup(clean_up);
-
-        mapped_obs.into()
+impl<T: 'static> Observable<T> {
+    pub fn map_value<R: 'static>(&self, f: impl Fn(&T) -> R + 'static) -> MapReader<R> {
+        self.reader().map_value(f)
     }
 
-    pub fn map_reader<R: Clone + 'static>(self, f: MapReaderFn<T, R>) -> Observable<R, false> {
-        let middle_obs = { f(&self.get()) };
-        let initial_value = { middle_obs.get().clone() };
-        let mapped_obs = Observable::new(initial_value);
-
-        if let Some(sub) = mapped_obs.reader().subscribe_reader(middle_obs.reader) {
-            mapped_obs.listener_set.on_mapped_obs_unsubscribe(sub)
-        }
-
-        let mapped_reader = mapped_obs.reader();
-
-        self.listener_set.subscribe(Box::new(move |value: &T| {
-            if let Some(mapped_notifier) = mapped_reader.parent() {
-                mapped_notifier.cleanup_downstreams();
-                let middle_obs = { f(value) };
-                mapped_reader.value.replace(middle_obs.get().clone());
-                if let Some(clean_up) = mapped_reader.clone().subscribe_reader(middle_obs.reader) {
-                    mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
-                }
-            }
-        }));
-
-        let clean_up: Box<dyn FnOnce()> = Box::new(move || {
-            drop(self.listener_set);
-        });
-        mapped_obs.on_cleanup(clean_up);
-
-        mapped_obs.into()
-    }
-
-    pub fn map_obs<R: Clone + 'static>(self, f: MapObsFn<T, R>) -> Observable<R, false> {
-        let initial_mapped_obs = { f(&self.get()) };
-        let mapped_obs: Observable<R> = Observable {
-            value: initial_mapped_obs.value,
-            listener_set: ListenerSet::default(),
-        };
-
-        let mapped_obs_writer = mapped_obs.listener_set.writer();
-        let sub = initial_mapped_obs.listener_set.subscribe(move |value| {
-            mapped_obs_writer.write(value);
-        });
-        mapped_obs
-            .listener_set
-            .on_mapped_obs_unsubscribe(sub.into());
-
-        let mapped_reader = mapped_obs.reader();
-
-        self.listener_set.subscribe(move |value: &T| {
-            if let Some(mapped_notifier) = mapped_reader.parent() {
-                mapped_notifier.cleanup_downstreams();
-                let middle_obs = { f(value) };
-                mapped_reader.value.replace(middle_obs.get().clone());
-                if let Some(clean_up) = mapped_reader
-                    .clone()
-                    .subscribe_reader(middle_obs.listener_set.reader())
-                {
-                    mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
-                }
-            }
-        });
-
-        let clean_up: Box<dyn FnOnce()> = Box::new(move || {
-            drop(self.listener_set);
-        });
-        mapped_obs.on_cleanup(clean_up);
-
-        mapped_obs.into()
+    pub fn map_reader<R: Clone + 'static>(
+        &self,
+        f: impl Fn(&T) -> ValueReader<R> + 'static,
+    ) -> MapReader<R> {
+        self.reader().map_reader(f)
     }
 }
 
-impl<T, V> Observable<V, true>
+impl<T, V> Observable<V>
 where
     V: Pushable<Value = T>,
 {
@@ -195,13 +84,8 @@ where
     where
         T: 'static,
     {
-        {
-            let mut ref_mut = self.value.borrow_mut();
-            let vec = &mut *ref_mut;
-            vec.push(item);
-        }
-
-        self.listener_set.notify(&self.value.borrow());
+        self.value.push(item);
+        self.listener_set.notify();
     }
 }
 
@@ -214,115 +98,198 @@ where
     }
 }
 
-pub trait Pushable {
-    type Value;
-    fn push(&mut self, value: Self::Value);
-}
+impl<T: 'static> ValueReader<T> {
+    pub fn map_value<R: 'static>(self, f: impl Fn(&T) -> R + 'static) -> MapReader<R> {
+        MapReader::new(move |ctx| {
+            let val = ctx.track(&self);
+            f(&val)
+        })
+    }
 
-impl<T> Pushable for Vec<T> {
-    type Value = T;
-    fn push(&mut self, value: Self::Value) {
-        self.push(value)
+    pub fn map_reader<R: Clone + 'static>(
+        self,
+        f: impl Fn(&T) -> ValueReader<R> + 'static,
+    ) -> MapReader<R> {
+        MapReader::new(move |ctx| {
+            let t = ctx.track(&self);
+            let r_reader = f(&t);
+            let r_val = ctx.track(&r_reader);
+            r_val.clone()
+        })
     }
 }
 
 impl<T: 'static> ValueReader<T> {
-    pub fn map_value<R: 'static>(self, f: MapFn<T, R>) -> Observable<R, false> {
-        let initial_value = { f(&self.get()) };
-        let mapped_obs = Observable::new(initial_value);
-
-        let mapped_weak = mapped_obs.reader();
-        if let Some(clean_up) = mapped_weak.subscribe_mapped_reader(self, f) {
-            mapped_obs.on_cleanup(clean_up);
-        }
-
-        mapped_obs.into()
+    pub fn value_ref(&self) -> Ref<T> {
+        self.value.get()
+    }
+    pub fn value(&self) -> Rc<Value<T>> {
+        self.value.clone()
     }
 
-    pub fn map_reader<R: Clone + 'static>(self, f: MapReaderFn<T, R>) -> Observable<R, false> {
-        let middle_obs = { f(&self.get()) };
-        let initial_value = { middle_obs.get().clone() };
-        let mapped_obs = Observable::new(initial_value);
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Option<Subscription> {
+        let value = self.value.clone();
+        self.reader.subscribe(move || cb(&value.get()))
+    }
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Option<Subscription> {
+        let value = self.value.clone();
+        self.reader.once(move || cb(&value.get()))
+    }
+}
+impl<T> Deref for ValueReader<T> {
+    type Target = Reader;
 
-        if let Some(clean_up) = mapped_obs.reader().subscribe_reader(middle_obs.reader) {
-            mapped_obs.listener_set.on_mapped_obs_unsubscribe(clean_up)
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+impl<T> Clone for ValueReader<T> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            reader: self.reader.clone(),
         }
+    }
+}
 
-        let mapped_reader = mapped_obs.reader();
+/// MapReader is a handle to the latest output value of a map function.
+/// It is essential the the MapReader (or its clones) be the only struct to have a strong reference
+/// to said closure. This is because we want the closure to be able to close over owned/strong references
+/// to its upstream ValueReaders WITHOUT creating a cycle.
+///
+/// The weak ref must be between the Observable and the map function. NOT inside the map function
+pub struct MapReader<T> {
+    value: Rc<Value<T>>,
+    listener_set: ListenerSet,
+    #[allow(dead_code)]
+    downstreams: Rc<Downstreams>,
+    #[allow(dead_code, clippy::type_complexity)]
+    closure: Rc<dyn Fn(&MapReaderContext<T>) -> T>,
+}
 
-        if let Some(self_listener_set) = self.reader.parent() {
-            let sub = self_listener_set.subscribe(move |value: &T| {
-                if let Some(mapped_notifier) = mapped_reader.parent() {
-                    mapped_notifier.cleanup_downstreams();
-                    let middle_obs = { f(value) };
-                    mapped_reader.value.replace(middle_obs.get().clone());
-                    if let Some(clean_up) =
-                        mapped_reader.clone().subscribe_reader(middle_obs.reader)
-                    {
-                        mapped_notifier.on_mapped_obs_unsubscribe(clean_up);
-                    }
-                }
-            });
+impl<T> MapReader<T> {
+    pub fn new(f: impl Fn(&MapReaderContext<T>) -> T + 'static) -> Self {
+        let listener_set = ListenerSet::default();
+        let closure: Rc<MapReaderClosure<T>> = Rc::new(f);
+        let downstreams = Rc::default();
 
-            mapped_obs.on_cleanup(sub);
+        let value = Rc::new_cyclic(|weak| {
+            let ctx = MapReaderContext {
+                index: Cell::new(0),
+                value: weak.clone(),
+                my_reader: listener_set.reader(),
+                downstreams: Rc::downgrade(&downstreams),
+                closure: Rc::downgrade(&closure),
+            };
+
+            let first_value = closure(&ctx);
+            Value::new(first_value)
+        });
+
+        MapReader {
+            value,
+            listener_set,
+            downstreams,
+            closure,
         }
-
-        mapped_obs.into()
     }
 
-    fn subscribe_reader(self, reader: Reader<T>) -> Option<CleanUp>
-    where
-        T: Clone,
-    {
-        let sub = reader.subscribe(move |value: &T| {
-            self.value.replace(value.clone());
-            self.reader.writer().write(&self.value.borrow());
-        })?;
-
-        Some(sub.into())
+    pub fn value_ref(&self) -> Ref<T> {
+        self.value.get()
+    }
+    pub fn value(&self) -> Rc<Value<T>> {
+        self.value.clone()
     }
 
-    fn subscribe_mapped_reader<In: 'static>(
-        self,
-        value_reader: ValueReader<In>,
-        f: MapFn<In, T>,
-    ) -> Option<CleanUp> {
-        let writer = self.writer();
-        let sub = value_reader.subscribe(Box::new(move |value: &In| {
-            if let Some(working_set) = writer.working_set() {
-                let mapped = f(value);
-                self.value.replace(mapped);
-                working_set.notify(&self.value.borrow());
+    pub fn value_reader(&self) -> ValueReader<T> {
+        ValueReader {
+            value: self.value.clone(),
+            reader: self.listener_set.reader(),
+        }
+    }
+    pub fn reader(&self) -> Reader {
+        self.listener_set.reader()
+    }
+}
+
+type Downstreams = RefCell<Vec<(Reader, Option<Subscription>)>>;
+type MapReaderClosure<T> = dyn Fn(&MapReaderContext<T>) -> T;
+pub struct MapReaderContext<T> {
+    index: Cell<usize>,
+    value: Weak<Value<T>>,
+    my_reader: Reader,
+    downstreams: Weak<Downstreams>,
+    closure: Weak<MapReaderClosure<T>>,
+}
+
+impl<T: 'static> MapReaderContext<T> {
+    pub fn track_reader(&self, reader: &Reader) {
+        let index = self.index.get();
+        let Some(downstreams) = self.downstreams.upgrade() else {
+            return;
+        };
+        let mut list = downstreams.borrow_mut();
+        if index < list.len() {
+            if list[index].0 != *reader {
+                let sub = reader.subscribe(self.subscription_closure());
+                list[index] = (reader.clone(), sub);
             }
-        }))?;
-
-        Some(sub.into())
+        } else {
+            let sub = reader.subscribe(self.subscription_closure());
+            list.push((reader.clone(), sub))
+        }
+        self.index.set(index + 1);
     }
-}
 
-impl<T> From<Observable<T, true>> for Observable<T, false> {
-    fn from(obs: Observable<T>) -> Self {
-        Observable {
-            value: obs.value,
-            listener_set: obs.listener_set,
+    #[inline]
+    pub fn track<'a, V>(&self, value_reader: &'a ValueReader<V>) -> Ref<'a, V> {
+        self.track_reader(&value_reader.reader);
+        value_reader.value.get()
+    }
+
+    fn clear_unused_readers(&self) {
+        let Some(downstreams) = self.downstreams.upgrade() else {
+            return;
+        };
+        let mut list = downstreams.borrow_mut();
+        let new_len = self.index.get();
+        if new_len < list.len() {
+            list.resize_with(new_len, || unreachable!());
         }
     }
 }
+impl<T: 'static> MapReaderContext<T> {
+    fn subscription_closure(&self) -> impl Fn() + 'static {
+        let ctx = MapReaderContext {
+            index: Cell::new(0),
+            value: self.value.clone(),
+            my_reader: self.my_reader.clone(),
+            downstreams: self.downstreams.clone(),
+            closure: self.closure.clone(),
+        };
+        move || {
+            let Some(f) = ctx.closure.upgrade() else {
+                return;
+            };
+            let Some(value) = ctx.value.upgrade() else {
+                return;
+            };
 
-pub enum MapObsResult<T> {
-    Value(T),
-    Weak(ValueReader<T>),
-    Obs(Observable<T, false>),
+            if let Some(working_set) = ctx.my_reader.working_set() {
+                let new_val = f(&ctx);
+                ctx.clear_unused_readers();
+                value.set(new_val);
+                working_set.notify();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{
-        cell::{Cell, RefCell},
-        rc::Rc,
-    };
+    use std::{cell::RefCell, rc::Rc};
 
-    use crate::Pushable;
+    use crate::{Pushable, Subscription, ValueReader};
 
     use super::Observable;
 
@@ -413,63 +380,99 @@ mod test {
     }
 
     #[test]
-    fn observable_on_cleanup() {
-        let obs = Observable::new(5);
-
-        let count = Rc::new(Cell::new(0));
-        let f = {
-            let count = count.clone();
-            move || {
-                count.set(1);
-                drop(count);
-            }
-        };
-        let clean_up: Box<dyn FnOnce()> = Box::new(f);
-        obs.on_cleanup(clean_up);
-
-        assert_eq!(count.get(), 0);
-        obs.set(1);
-        assert_eq!(count.get(), 0);
-        obs.clean_up();
-        assert_eq!(count.get(), 1);
-    }
-
-    #[test]
-    fn observable_on_cleanup_by_drop() {
-        let obs = Observable::new(5);
-
-        let count = Rc::new(Cell::new(0));
-        let f = {
-            let count = count.clone();
-            move || {
-                count.set(1);
-                drop(count);
-            }
-        };
-        let clean_up: Box<dyn FnOnce()> = Box::new(f);
-        obs.on_cleanup(clean_up);
-
-        assert_eq!(count.get(), 0);
-        obs.set(1);
-        assert_eq!(count.get(), 0);
-        drop(obs);
-        assert_eq!(count.get(), 1);
-    }
-
-    #[test]
     fn observable_map() {
         let obs1 = Observable::new(0);
-        let obs2 = obs1.reader().map_value(Box::new(|n| 2 * n + 1));
+        let map_reader = obs1.reader().map_value(|n| 2 * n + 1);
 
         {
-            assert_eq!(*obs1.get(), 0);
-            assert_eq!(*obs2.get(), 1);
+            assert_eq!(*obs1.value_ref(), 0);
+            assert_eq!(*map_reader.value_ref(), 1);
         }
 
         {
             obs1.set(1);
-            assert_eq!(*obs1.get(), 1);
-            assert_eq!(*obs2.get(), 3);
+            assert_eq!(*obs1.value_ref(), 1);
+            assert_eq!(*map_reader.value_ref(), 3);
         }
+    }
+    struct Dog {
+        weight_kg: Observable<f32>,
+    }
+
+    impl Dog {
+        // TODO impl Default for Observable<T> where D: Default
+        // AND Into<Observable<T>> for T
+        pub fn new(weight_kg: f32) -> Self {
+            Dog {
+                weight_kg: Observable::new(weight_kg),
+            }
+        }
+        pub fn feed(&self) {
+            self.weight_kg.set(*self.weight_kg.value_ref() + 0.1);
+        }
+        pub fn weight_kg(&self) -> ValueReader<f32> {
+            self.weight_kg.reader()
+        }
+    }
+
+    struct Person {
+        current_dog: Observable<Dog>,
+    }
+
+    #[test]
+    fn basic_subscription() {
+        struct App {
+            rex: Dog,
+            sub: Subscription,
+        }
+
+        impl App {
+            fn new() -> Self {
+                let rex = Dog::new(4.5);
+
+                // NOTE: Subscription drops when App drops
+                // QUESTION: Given that Subscription continues to live (even if inactive) after the writer drops
+                //           Does it actually make sense to return Option/Result from subscribe?
+                //           What's the difference between the writer going away before vs after we subscribe?
+
+                let sub = rex
+                    .weight_kg()
+                    .subscribe(move |w| Self::render(*w))
+                    .unwrap();
+                App { rex, sub }
+            }
+            fn render(w: f32) {
+                println!("Rex weighs {}", w); // or self.sub.value - is the subscription also a reader?
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_subscription() {
+        let person_obs = Person {
+            current_dog: Observable::new(Dog::new(4.5)),
+        };
+
+        let dog_mapped_reader = person_obs
+            .current_dog
+            .reader()
+            .map_reader(|p| p.weight_kg());
+        assert_eq!(*dog_mapped_reader.value_ref(), 4.5);
+
+        {
+            person_obs.current_dog.value_ref().weight_kg.set(6.7);
+        };
+        assert_eq!(*dog_mapped_reader.value_ref(), 6.7);
+
+        {
+            let new_dog = Dog::new(10.0);
+            person_obs.current_dog.set(new_dog);
+        };
+        assert_eq!(*dog_mapped_reader.value_ref(), 10.0);
+
+        {
+            person_obs.current_dog.value_ref().weight_kg.set(11.0);
+        };
+        assert_eq!(*dog_mapped_reader.value_ref(), 11.0);
     }
 }
