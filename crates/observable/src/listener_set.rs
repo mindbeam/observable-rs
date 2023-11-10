@@ -38,15 +38,15 @@ impl ListenerSetBase {
     }
 
     pub fn subscribe(&self, cb: impl Fn() + 'static) -> Subscription {
-        let cb: Rc<dyn FnMut()> = Rc::new(cb);
+        let cb: Rc<dyn Fn()> = Rc::new(cb);
         self.0
             .borrow_mut()
             .subscribe(Listener::Durable(Rc::downgrade(&cb)));
         Subscription::new(cb)
     }
     pub fn once(&self, cb: impl FnOnce() + 'static) -> Subscription {
-        let mut cb = Some(cb);
-        let cb: Rc<dyn FnMut()> = Rc::new(move || {
+        let cb = RefCell::new(Some(cb));
+        let cb: Rc<dyn Fn()> = Rc::new(move || {
             if let Some(f) = cb.take() {
                 f();
             }
@@ -93,11 +93,11 @@ impl Inner {
 
 // Reader needs to keep this alive. That's basically it
 enum Listener {
-    Once(Weak<dyn FnMut()>),
-    Durable(Weak<dyn FnMut()>),
+    Once(Weak<dyn Fn()>),
+    Durable(Weak<dyn Fn()>),
 }
 
-pub type WorkingItem = Weak<dyn FnMut()>;
+pub type WorkingItem = Weak<dyn Fn()>;
 
 pub struct WorkingSet {
     items: Vec<WorkingItem>,
@@ -111,11 +111,8 @@ impl WorkingSet {
 impl WorkingSet {
     pub(crate) fn notify(self) {
         for item in self.items {
-            if let Some(rc) = item.upgrade() {
-                unsafe {
-                    let f = Rc::as_ptr(&rc) as *mut dyn FnMut();
-                    (*f)();
-                }
+            if let Some(f) = item.upgrade() {
+                f()
             }
         }
     }
@@ -140,7 +137,7 @@ impl Reader {
         let sub = self.0.upgrade()?.once(cb);
         Some(sub)
     }
-    pub fn working_set(&self) -> Option<WorkingSet> {
+    pub(crate) fn working_set(&self) -> Option<WorkingSet> {
         self.0.upgrade().map(|ls| ls.working_set())
     }
 }
@@ -159,10 +156,10 @@ impl Eq for Reader {}
 
 pub struct Subscription {
     #[allow(dead_code)]
-    cb: Rc<dyn FnMut()>,
+    cb: Rc<dyn Fn()>,
 }
 impl Subscription {
-    pub fn new(cb: Rc<dyn FnMut()>) -> Self {
+    pub fn new(cb: Rc<dyn Fn()>) -> Self {
         Self { cb }
     }
 }

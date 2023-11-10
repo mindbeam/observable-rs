@@ -37,7 +37,7 @@ impl RustThing {
         self.list.push(format!("Thing {}", self.things));
     }
     pub fn get_the_list(&self) -> JsObservable {
-        let list = self.list.reader();
+        let list = self.list.value_reader();
         list.into()
     }
 }
