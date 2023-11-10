@@ -4,76 +4,53 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::CleanUp;
+#[derive(Default)]
+pub struct ListenerSet(Rc<ListenerSetBase>);
 
-pub struct ListenerSet<T>(Rc<ListenerSetBase<T>>);
-impl<T> Default for ListenerSet<T> {
-    fn default() -> Self {
-        Self(Rc::new(ListenerSetBase(Default::default())))
-    }
-}
-impl<T> Deref for ListenerSet<T> {
-    type Target = ListenerSetBase<T>;
+impl Deref for ListenerSet {
+    type Target = ListenerSetBase;
 
     fn deref(&self) -> &Self::Target {
         self.0.deref()
     }
 }
 
-impl<T> ListenerSet<T> {
-    pub fn writer(&self) -> Writer<T> {
-        Writer(Rc::downgrade(&self.0))
-    }
-    pub fn reader(&self) -> Reader<T> {
+impl ListenerSet {
+    pub fn reader(&self) -> Reader {
         Reader(Rc::downgrade(&self.0))
     }
 }
 
-pub struct ListenerSetBase<T>(RefCell<Inner<T>>);
+#[derive(Default)]
+pub struct ListenerSetBase(RefCell<Inner>);
 
-impl<T> ListenerSetBase<T> {
-    pub(crate) fn notify(&self, value: &T) {
+impl ListenerSetBase {
+    pub(crate) fn notify(&self) {
         let working_set = self.working_set();
 
         // Now that the borrow on the listeners vec is over, we can safely call them
         // We can also be confident that we won't call any listeners which were attached during our dispatch
-        working_set.notify(value);
+        working_set.notify();
     }
 
-    pub(crate) fn working_set(&self) -> WorkingSet<T> {
+    pub(crate) fn working_set(&self) -> WorkingSet {
         self.0.borrow_mut().working_set()
     }
 
-    pub fn on_cleanup(&self, clean_up: CleanUp) {
-        self.0.borrow_mut().subscribe(Listener::OnCleanUp(clean_up));
-    }
-    pub(crate) fn on_mapped_obs_unsubscribe(&self, clean_up: CleanUp) {
-        self.0
-            .borrow_mut()
-            .subscribe(Listener::Downstream(clean_up));
-    }
-    pub(crate) fn clean_up(&self) {
-        self.0.borrow_mut().items.clear();
-    }
-
-    pub(crate) fn cleanup_downstreams(&self) {
-        self.0.borrow_mut().cleanup_downstreams()
-    }
-    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription<T> {
-        let cb: Rc<dyn FnMut(&T)> = Rc::new(cb);
+    pub fn subscribe(&self, cb: impl Fn() + 'static) -> Subscription {
+        let cb: Rc<dyn FnMut()> = Rc::new(cb);
         self.0
             .borrow_mut()
             .subscribe(Listener::Durable(Rc::downgrade(&cb)));
         Subscription::new(cb)
     }
-    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription<T> {
+    pub fn once(&self, cb: impl FnOnce() + 'static) -> Subscription {
         let mut cb = Some(cb);
-        let cb = move |val: &T| {
+        let cb: Rc<dyn FnMut()> = Rc::new(move || {
             if let Some(f) = cb.take() {
-                f(val);
+                f();
             }
-        };
-        let cb: Rc<dyn FnMut(&T)> = Rc::new(cb);
+        });
         self.0
             .borrow_mut()
             .subscribe(Listener::Once(Rc::downgrade(&cb)));
@@ -81,27 +58,20 @@ impl<T> ListenerSetBase<T> {
     }
 }
 
-struct Inner<T> {
-    items: Vec<Listener<T>>,
+#[derive(Default)]
+struct Inner {
+    items: Vec<Listener>,
 }
 
-impl<T> Default for Inner<T> {
-    fn default() -> Self {
-        Inner { items: Vec::new() }
-    }
-}
-
-impl<T> Inner<T> {
-    fn working_set(&mut self) -> WorkingSet<T> {
+impl Inner {
+    fn working_set(&mut self) -> WorkingSet {
         // It's possible to add listeners while we are firing a listener
         // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
-        let mut working_set: Vec<WorkingItem<T>> = Vec::with_capacity(self.items.len());
+        let mut working_set: Vec<WorkingItem> = Vec::new();
 
         self.items.retain_mut(|item| match &item {
             Listener::Once(f) => {
-                if f.upgrade().is_some() {
-                    working_set.push(f.clone());
-                }
+                working_set.push(f.clone());
                 false
             }
             Listener::Durable(f) => match f.upgrade() {
@@ -111,121 +81,104 @@ impl<T> Inner<T> {
                 }
                 None => false,
             },
-            Listener::OnCleanUp(_) => true,
-            Listener::Downstream(_) => true,
         });
 
         WorkingSet::new(working_set)
     }
 
-    pub fn subscribe(&mut self, listener: Listener<T>) {
+    pub fn subscribe(&mut self, listener: Listener) {
         self.items.push(listener);
-    }
-
-    fn cleanup_downstreams(&mut self) {
-        self.items
-            .retain_mut(|item| !matches!(item, Listener::Downstream(_)))
     }
 }
 
 // Reader needs to keep this alive. That's basically it
-enum Listener<T> {
-    Once(Weak<dyn FnMut(&T)>),
-    Durable(Weak<dyn FnMut(&T)>),
-    OnCleanUp(CleanUp),
-    Downstream(CleanUp),
+enum Listener {
+    Once(Weak<dyn FnMut()>),
+    Durable(Weak<dyn FnMut()>),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ListenerHandle(usize);
+pub type WorkingItem = Weak<dyn FnMut()>;
 
-pub type WorkingItem<T> = Weak<dyn FnMut(&T)>;
-
-pub struct WorkingSet<T> {
-    items: Vec<WorkingItem<T>>,
+pub struct WorkingSet {
+    items: Vec<WorkingItem>,
 }
-impl<T> WorkingSet<T> {
-    pub(crate) fn new(items: Vec<WorkingItem<T>>) -> Self {
+impl WorkingSet {
+    pub(crate) fn new(items: Vec<WorkingItem>) -> Self {
         WorkingSet { items }
     }
 }
 
-impl<T> WorkingSet<T> {
-    pub(crate) fn notify(self, value: &T) {
+impl WorkingSet {
+    pub(crate) fn notify(self) {
         for item in self.items {
             if let Some(rc) = item.upgrade() {
                 unsafe {
-                    let f = Rc::as_ptr(&rc) as *mut dyn FnMut(&T);
-                    (*f)(value);
+                    let f = Rc::as_ptr(&rc) as *mut dyn FnMut();
+                    (*f)();
                 }
             }
         }
     }
 }
 
-pub struct Writer<T>(Weak<ListenerSetBase<T>>);
-impl<T> Clone for Writer<T> {
+pub struct Writer(Weak<ListenerSetBase>);
+impl Clone for Writer {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
-impl<T> Writer<T> {
-    pub fn write(&self, value: &T) -> bool {
-        match self.working_set() {
-            Some(working_set) => {
-                working_set.notify(value);
-                true
-            }
-            None => false,
-        }
-    }
 
-    pub fn working_set(&self) -> Option<WorkingSet<T>> {
-        self.0.upgrade().map(|rc| ListenerSet(rc).working_set())
-    }
-}
+#[derive(Clone, Debug)]
+pub struct Reader(Weak<ListenerSetBase>);
 
-pub struct Reader<T>(Weak<ListenerSetBase<T>>);
-impl<T> Clone for Reader<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-impl<T> Reader<T> {
-    pub fn writer(&self) -> Writer<T> {
-        Writer(self.0.clone())
-    }
-
-    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Option<Subscription<T>> {
-        let listener_set = ListenerSet(self.0.upgrade()?);
-        let sub = listener_set.subscribe(cb);
+impl Reader {
+    pub fn subscribe(&self, cb: impl Fn() + 'static) -> Option<Subscription> {
+        let sub = self.0.upgrade()?.subscribe(cb);
         Some(sub)
     }
-    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Option<Subscription<T>> {
-        let listener_set = ListenerSet(self.0.upgrade()?);
-        let sub = listener_set.once(cb);
+    pub fn once(&self, cb: impl FnOnce() + 'static) -> Option<Subscription> {
+        let sub = self.0.upgrade()?.once(cb);
         Some(sub)
     }
-    pub fn parent(&self) -> Option<ListenerSet<T>> {
-        self.0.upgrade().map(|rc| ListenerSet(rc))
+    pub fn working_set(&self) -> Option<WorkingSet> {
+        self.0.upgrade().map(|ls| ls.working_set())
     }
 }
+impl PartialEq<Reader> for Reader {
+    fn eq(&self, other: &Reader) -> bool {
+        let Some(rc1) = self.0.upgrade() else {
+            return false;
+        };
+        let Some(rc2) = other.0.upgrade() else {
+            return false;
+        };
+        Rc::ptr_eq(&rc1, &rc2)
+    }
+}
+impl Eq for Reader {}
 
-pub struct Subscription<T> {
+pub struct Subscription {
     #[allow(dead_code)]
-    cb: Rc<dyn FnMut(&T)>,
+    cb: Rc<dyn FnMut()>,
 }
-impl<T> Subscription<T> {
-    pub fn new(cb: Rc<dyn FnMut(&T)>) -> Self {
+impl Subscription {
+    pub fn new(cb: Rc<dyn FnMut()>) -> Self {
         Self { cb }
     }
 }
-impl<T: 'static> From<Subscription<T>> for CleanUp {
-    fn from(subscription: Subscription<T>) -> Self {
-        let cb = move || {
-            drop(subscription);
-        };
-        let f: Box<dyn FnOnce()> = Box::new(cb);
-        CleanUp::from(f)
+
+#[cfg(test)]
+mod test {
+    use crate::ListenerSet;
+
+    #[test]
+    fn reader_equality() {
+        let listener_set = ListenerSet::default();
+        let reader1 = listener_set.reader();
+        let reader2 = listener_set.reader();
+        assert_eq!(reader1, reader2);
+
+        drop(listener_set);
+        assert_ne!(reader1, reader2);
     }
 }
