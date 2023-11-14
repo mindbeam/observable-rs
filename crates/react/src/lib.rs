@@ -48,7 +48,7 @@ use wasm_bindgen::{prelude::*, JsValue};
 /// }
 ///
 /// let obs = Observable::new(CatState::new(1));
-/// let obsJs: JsObservable = obs.value_reader().into();
+/// let obsJs: JsObservable = obs.reader().into();
 /// let lastRustCats: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 /// let lrc = lastRustCats.clone();
 ///
@@ -67,10 +67,10 @@ use wasm_bindgen::{prelude::*, JsValue};
 ///
 /// // Both Rust Cats and JS Cats logs are printed
 ///
-/// let barObsJs: JsObservable = Observable::new(Bar::default()).value_reader().into();
-/// let strObsJs: JsObservable = Observable::new(String::from("Meow")).value_reader().into();
-/// let intObsJs: JsObservable = Observable::new(123).value_reader().into();
-/// let fltObsJs: JsObservable = Observable::new(123.0).value_reader().into();
+/// let barObsJs: JsObservable = Observable::new(Bar::default()).reader().into();
+/// let strObsJs: JsObservable = Observable::new(String::from("Meow")).reader().into();
+/// let intObsJs: JsObservable = Observable::new(123).reader().into();
+/// let fltObsJs: JsObservable = Observable::new(123.0).reader().into();
 /// ```
 #[wasm_bindgen]
 pub struct JsObservable {

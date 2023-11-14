@@ -2,7 +2,7 @@ use std::cell::Ref;
 
 use dyn_clone::DynClone;
 use js_sys::Function;
-use observable_rs::{Subscription, ValueReader};
+use observable_rs::{Reader, Subscription};
 // use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::JsValue;
 
@@ -31,7 +31,7 @@ pub trait JsObserve: DynClone {
     fn once(&self, cb: Box<dyn Fn(JsValue)>) -> Option<Subscription>;
 }
 
-impl<T> JsObserve for ValueReader<T>
+impl<T> JsObserve for Reader<T>
 where
     T: Into<JsValue> + Clone + 'static,
 {
@@ -50,7 +50,7 @@ where
     }
 }
 
-impl<T: 'static> JsObserve for ValueReader<List<T>>
+impl<T: 'static> JsObserve for Reader<List<T>>
 where
     T: Into<JsValue> + Clone,
 {
