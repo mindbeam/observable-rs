@@ -8,6 +8,7 @@
 mod listener_set;
 mod observable;
 mod pushable;
+pub mod unique_ref;
 mod value;
 
 // Reexport of the public API.

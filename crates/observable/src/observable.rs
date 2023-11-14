@@ -2,41 +2,37 @@ use std::cell::{Cell, Ref, RefCell};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
-use crate::listener_set::{ListenerSet, Reader, Subscription};
-use crate::{Pushable, Value};
+use crate::listener_set::Subscription;
+use crate::unique_ref::{UniqueRef, WeakRef};
+use crate::{ListenerSet, Pushable, Value};
 
 pub struct Observable<T> {
     value: Rc<Value<T>>,
-    listener_set: ListenerSet,
+    listener_set: UniqueRef<ListenerSet>,
 }
 
 /// A reader that stores the present value - regardless of whether the writer is alive or not.
-/// ValueReader is a handle to read the present value of an Observable
+/// Reader is a handle to read the present value of an Observable
 /// It does NOT keep that observable alive, but whenever that observable drops,
 /// we will keep a copy of its last value
-pub struct ValueReader<T> {
+pub struct Reader<T> {
     value: Rc<Value<T>>,
 
-    // Why is this here? Used only for cloning the ValueReader?
-    reader: Reader,
+    // Why is this here? Used only for cloning the Reader?
+    listener_set: WeakRef<ListenerSet>,
 }
 
 impl<T> Observable<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: Value::rc(value),
-            listener_set: ListenerSet::default(),
+            listener_set: UniqueRef::default(),
         }
     }
-
-    // pub fn value(initial_value: T) -> (Writer<T>, Value<T>) {
-
-    // }
-
-    pub fn value_reader(&self) -> ValueReader<T> {
-        ValueReader {
+    pub fn reader(&self) -> Reader<T> {
+        Reader {
             value: self.value.clone(),
-            reader: self.listener_set.reader(),
+            listener_set: self.listener_set.downgrade(),
         }
     }
 }
@@ -60,23 +56,23 @@ impl<T> Observable<T> {
 
 impl<T: 'static> Observable<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
-        self.value_reader().subscribe(cb).unwrap()
+        self.reader().subscribe(cb).unwrap()
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
-        self.value_reader().once(cb).unwrap()
+        self.reader().once(cb).unwrap()
     }
 }
 
 impl<T: 'static> Observable<T> {
     pub fn map_value<R: 'static>(&self, f: impl Fn(&T) -> R + 'static) -> MapReader<R> {
-        self.value_reader().map_value(f)
+        self.reader().map_value(f)
     }
 
     pub fn map_reader<R: Clone + 'static>(
         &self,
-        f: impl Fn(&T) -> ValueReader<R> + 'static,
-    ) -> MapReader<R> {
-        self.value_reader().map_reader(f)
+        f: impl Fn(&T) -> Reader<R> + 'static,
+    ) -> DynMapReader<R> {
+        self.reader().map_reader(f)
     }
 }
 
@@ -102,28 +98,31 @@ where
     }
 }
 
-impl<T: 'static> ValueReader<T> {
+impl<T: 'static> Reader<T> {
     pub fn map_value<R: 'static>(self, f: impl Fn(&T) -> R + 'static) -> MapReader<R> {
-        MapReader::new(move |ctx| {
-            let val = ctx.track(&self);
-            f(&val)
-        })
+        use crate::map_obs;
+        let a = self;
+        map_obs!(f, a)
     }
 
     pub fn map_reader<R: Clone + 'static>(
         self,
-        f: impl Fn(&T) -> ValueReader<R> + 'static,
-    ) -> MapReader<R> {
-        MapReader::new(move |ctx| {
+        f: impl Fn(&T) -> Reader<R> + 'static,
+    ) -> DynMapReader<R> {
+        DynMapReader::new(move |ctx| {
             let t = ctx.track(&self);
             let r_reader = f(&t);
             let r_val = ctx.track(&r_reader);
             r_val.clone()
         })
     }
+
+    pub fn reader(self) -> Self {
+        self
+    }
 }
 
-impl<T> ValueReader<T> {
+impl<T> Reader<T> {
     pub fn value(&self) -> Ref<T> {
         self.value.get()
     }
@@ -133,37 +132,42 @@ impl<T> ValueReader<T> {
     {
         self.value.get().clone()
     }
+    pub fn split(self) -> (Rc<Value<T>>, WeakRef<ListenerSet>) {
+        (self.value, self.listener_set)
+    }
 }
-impl<T: 'static> ValueReader<T> {
+impl<T: 'static> Reader<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Option<Subscription> {
         let value = Rc::downgrade(&self.value);
-        self.reader.subscribe(move || {
+        let sub = self.listener_set.upgrade()?.subscribe(move || {
             if let Some(value) = value.upgrade() {
                 cb(&value.get())
             }
-        })
+        });
+        Some(sub)
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Option<Subscription> {
         let value = Rc::downgrade(&self.value);
-        self.reader.once(move || {
+        let sub = self.listener_set.upgrade()?.once(move || {
             if let Some(value) = value.upgrade() {
                 cb(&value.get())
             }
-        })
+        });
+        Some(sub)
     }
 }
-impl<T> Deref for ValueReader<T> {
-    type Target = Reader;
+impl<T> Deref for Reader<T> {
+    type Target = WeakRef<ListenerSet>;
 
     fn deref(&self) -> &Self::Target {
-        &self.reader
+        &self.listener_set
     }
 }
-impl<T> Clone for ValueReader<T> {
+impl<T> Clone for Reader<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            reader: self.reader.clone(),
+            listener_set: self.listener_set.clone(),
         }
     }
 }
@@ -171,29 +175,167 @@ impl<T> Clone for ValueReader<T> {
 /// MapReader is a handle to the latest output value of a map function.
 /// It is essential the the MapReader (or its clones) be the only struct to have a strong reference
 /// to said closure. This is because we want the closure to be able to close over owned/strong references
-/// to its upstream ValueReaders WITHOUT creating a cycle.
+/// to its upstream Readers WITHOUT creating a cycle.
 ///
 /// The weak ref must be between the Observable and the map function. NOT inside the map function
 pub struct MapReader<T> {
     value: Rc<Value<T>>,
-    listener_set: ListenerSet,
+    listener_set: UniqueRef<ListenerSet>,
     #[allow(dead_code)]
-    downstreams: Rc<Downstreams>,
+    downstreams: Vec<Subscription>,
     #[allow(dead_code, clippy::type_complexity)]
-    closure: Rc<dyn Fn(&MapReaderContext<T>) -> T>,
+    closure: Rc<dyn Fn()>,
+}
+
+impl<T>
+    From<(
+        Rc<Value<T>>,
+        UniqueRef<ListenerSet>,
+        Vec<Subscription>,
+        Rc<dyn Fn()>,
+    )> for MapReader<T>
+{
+    fn from(
+        (value, listener_set, downstreams, closure): (
+            Rc<Value<T>>,
+            UniqueRef<ListenerSet>,
+            Vec<Subscription>,
+            Rc<dyn Fn()>,
+        ),
+    ) -> Self {
+        MapReader {
+            value,
+            listener_set,
+            downstreams,
+            closure,
+        }
+    }
 }
 
 impl<T> MapReader<T> {
-    pub fn new(f: impl Fn(&MapReaderContext<T>) -> T + 'static) -> Self {
-        let listener_set = ListenerSet::default();
-        let closure: Rc<MapReaderClosure<T>> = Rc::new(f);
+    pub fn value(&self) -> Ref<T> {
+        self.value.get()
+    }
+    pub fn value_cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value.get().clone()
+    }
+
+    pub fn reader(&self) -> Reader<T> {
+        Reader {
+            value: self.value.clone(),
+            listener_set: self.listener_set.downgrade(),
+        }
+    }
+    pub fn listener_set(&self) -> WeakRef<ListenerSet> {
+        self.listener_set.downgrade()
+    }
+}
+
+impl<T: 'static> MapReader<T> {
+    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
+        self.reader().subscribe(cb).unwrap()
+    }
+    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
+        self.reader().once(cb).unwrap()
+    }
+}
+
+/// Maps one or many observers into a new one
+/// ```
+/// use observable_rs::{Observable, map_obs};
+///
+/// let obs1: Observable<u32> = Observable::new(1);
+/// let obs2: Observable<u32> = Observable::new(2);
+///
+/// let obs = map_obs!(|a: &u32, b: &u32| {*a + *b}, obs1, obs2);
+/// assert_eq!(*obs.value(), 3);
+///
+/// obs1.set(3);
+/// assert_eq!(*obs.value(), 5);
+///
+/// obs2.set(4);
+/// assert_eq!(*obs.value(), 7);
+/// ```
+#[macro_export]
+macro_rules! map_obs {
+    ($cb:expr, $($obs:ident),+) => {{
+        use std::rc::Rc;
+        use $crate::unique_ref::{UniqueRef, WeakRef};
+        use $crate::{ListenerSet, Value, Reader, MapReader};
+
+        let mut listener_set_list: Vec<WeakRef<ListenerSet>> = Vec::new();
+
+        $(let $obs = {
+            let reader: Reader<_> = $obs.reader();
+            let (value, listener_set) = reader.split();
+            listener_set_list.push(listener_set);
+            value
+        };)+
+        let listener_set: UniqueRef<ListenerSet> = UniqueRef::default();
+        #[allow(clippy::redundant_closure_call)]
+        let value = $cb($(&*$obs.get(),)*);
+        let value = Value::rc(value);
+
+        let closure: Rc<dyn Fn()> = {
+            let listener_set = listener_set.downgrade();
+            let value = Rc::downgrade(&value);
+            Rc::new(move || {
+                let Some(reader_value) = value.upgrade() else {
+                    return;
+                };
+                let Some(listener_set) = listener_set.upgrade() else {
+                    return;
+                };
+
+                #[allow(clippy::redundant_closure_call)]
+                let value = $cb($(&*$obs.get(),)*);
+                reader_value.set(value);
+                listener_set.notify();
+            })
+        };
+        let weak_closure = Rc::downgrade(&closure);
+        let downstreams = listener_set_list
+            .into_iter()
+            .filter_map(|ls| {
+                let listener_set = ls.upgrade()?;
+                let closure = weak_closure.clone();
+                let sub = listener_set.subscribe(move || {
+                    if let Some(closure) = closure.upgrade() {
+                        closure()
+                    }
+                });
+                Some(sub)
+            })
+            .collect();
+
+        MapReader::from((value, listener_set, downstreams, closure,))
+    }};
+}
+
+pub struct DynMapReader<T> {
+    value: Rc<Value<T>>,
+    listener_set: UniqueRef<ListenerSet>,
+    #[allow(dead_code)]
+    downstreams: Rc<Downstreams>,
+    #[allow(dead_code)]
+    closure: Rc<DynMapReaderClosure<T>>,
+}
+type Downstreams = RefCell<Vec<(WeakRef<ListenerSet>, Option<Subscription>)>>;
+
+impl<T> DynMapReader<T> {
+    pub fn new(f: impl Fn(&DynMapReaderContext<T>) -> T + 'static) -> Self {
+        let listener_set: UniqueRef<ListenerSet> = UniqueRef::default();
+        let closure: Rc<DynMapReaderClosure<T>> = Rc::new(f);
         let downstreams = Rc::default();
 
         let value = Rc::new_cyclic(|weak| {
-            let ctx = MapReaderContext {
+            let ctx = DynMapReaderContext {
                 index: Cell::new(0),
                 value: weak.clone(),
-                my_reader: listener_set.reader(),
+                my_reader: listener_set.downgrade(),
                 downstreams: Rc::downgrade(&downstreams),
                 closure: Rc::downgrade(&closure),
             };
@@ -202,14 +344,19 @@ impl<T> MapReader<T> {
             Value::new(first_value)
         });
 
-        MapReader {
+        DynMapReader {
             value,
             listener_set,
             downstreams,
             closure,
         }
     }
-
+    pub fn reader(&self) -> Reader<T> {
+        Reader {
+            value: self.value.clone(),
+            listener_set: self.listener_set.downgrade(),
+        }
+    }
     pub fn value(&self) -> Ref<T> {
         self.value.get()
     }
@@ -219,60 +366,52 @@ impl<T> MapReader<T> {
     {
         self.value.get().clone()
     }
-
-    pub fn value_reader(&self) -> ValueReader<T> {
-        ValueReader {
-            value: self.value.clone(),
-            reader: self.listener_set.reader(),
-        }
-    }
-    pub fn reader(&self) -> Reader {
-        self.listener_set.reader()
-    }
 }
-
-impl<T: 'static> MapReader<T> {
+impl<T: 'static> DynMapReader<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
-        self.value_reader().subscribe(cb).unwrap()
+        self.reader().subscribe(cb).unwrap()
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
-        self.value_reader().once(cb).unwrap()
+        self.reader().once(cb).unwrap()
     }
 }
 
-type Downstreams = RefCell<Vec<(Reader, Option<Subscription>)>>;
-type MapReaderClosure<T> = dyn Fn(&MapReaderContext<T>) -> T;
-pub struct MapReaderContext<T> {
+type DynMapReaderClosure<T> = dyn Fn(&DynMapReaderContext<T>) -> T;
+pub struct DynMapReaderContext<T> {
     index: Cell<usize>,
     value: Weak<Value<T>>,
-    my_reader: Reader,
+    my_reader: WeakRef<ListenerSet>,
     downstreams: Weak<Downstreams>,
-    closure: Weak<MapReaderClosure<T>>,
+    closure: Weak<DynMapReaderClosure<T>>,
 }
 
-impl<T: 'static> MapReaderContext<T> {
-    pub fn track_reader(&self, reader: &Reader) {
+impl<T: 'static> DynMapReaderContext<T> {
+    pub fn track_reader(&self, listener_set: &WeakRef<ListenerSet>) {
         let index = self.index.get();
         let Some(downstreams) = self.downstreams.upgrade() else {
             return;
         };
         let mut list = downstreams.borrow_mut();
         if index < list.len() {
-            if list[index].0 != *reader {
-                let sub = reader.subscribe(self.subscription_closure());
-                list[index] = (reader.clone(), sub);
+            if list[index].0 != *listener_set {
+                let sub = listener_set
+                    .upgrade()
+                    .map(|ls| ls.subscribe(self.subscription_closure()));
+                list[index] = (listener_set.clone(), sub);
             }
         } else {
-            let sub = reader.subscribe(self.subscription_closure());
-            list.push((reader.clone(), sub))
+            let sub = listener_set
+                .upgrade()
+                .map(|ls| ls.subscribe(self.subscription_closure()));
+            list.push((listener_set.clone(), sub))
         }
         self.index.set(index + 1);
     }
 
     #[inline]
-    pub fn track<'a, V>(&self, value_reader: &'a ValueReader<V>) -> Ref<'a, V> {
-        self.track_reader(&value_reader.reader);
-        value_reader.value.get()
+    pub fn track<'a, V>(&self, reader: &'a Reader<V>) -> Ref<'a, V> {
+        self.track_reader(&reader.listener_set);
+        reader.value.get()
     }
 
     fn clear_unused_readers(&self) {
@@ -286,9 +425,9 @@ impl<T: 'static> MapReaderContext<T> {
         }
     }
 }
-impl<T: 'static> MapReaderContext<T> {
+impl<T: 'static> DynMapReaderContext<T> {
     fn subscription_closure(&self) -> impl Fn() + 'static {
-        let ctx = MapReaderContext {
+        let ctx = DynMapReaderContext {
             index: Cell::new(0),
             value: self.value.clone(),
             my_reader: self.my_reader.clone(),
@@ -303,13 +442,29 @@ impl<T: 'static> MapReaderContext<T> {
                 return;
             };
 
-            if let Some(working_set) = ctx.my_reader.working_set() {
+            if let Some(listener_set) = ctx.my_reader.upgrade() {
                 let new_val = f(&ctx);
                 ctx.clear_unused_readers();
                 value.set(new_val);
-                working_set.notify();
+                listener_set.notify();
             }
         }
+    }
+}
+
+impl<T> From<&Observable<T>> for Reader<T> {
+    fn from(value: &Observable<T>) -> Self {
+        value.reader()
+    }
+}
+impl<T> From<&MapReader<T>> for Reader<T> {
+    fn from(value: &MapReader<T>) -> Self {
+        value.reader()
+    }
+}
+impl<T> From<&DynMapReader<T>> for Reader<T> {
+    fn from(value: &DynMapReader<T>) -> Self {
+        value.reader()
     }
 }
 
@@ -320,7 +475,7 @@ mod test {
         rc::Rc,
     };
 
-    use crate::{Pushable, Subscription, ValueReader};
+    use crate::{Pushable, Reader, Subscription};
 
     use super::Observable;
 
@@ -413,7 +568,7 @@ mod test {
     #[test]
     fn observable_map() {
         let obs1 = Observable::new(0);
-        let map_reader = obs1.value_reader().map_value(|n| 2 * n + 1);
+        let map_reader = obs1.reader().map_value(|n| 2 * n + 1);
 
         {
             assert_eq!(*obs1.value(), 0);
@@ -442,8 +597,8 @@ mod test {
             let new_weight_kg = { *self.weight_kg.value() + 0.1 };
             self.weight_kg.set(new_weight_kg);
         }
-        pub fn weight_kg(&self) -> ValueReader<f32> {
-            self.weight_kg.value_reader()
+        pub fn weight_kg(&self) -> Reader<f32> {
+            self.weight_kg.reader()
         }
     }
 
@@ -501,7 +656,7 @@ mod test {
 
         let dog_mapped_reader = person_obs
             .current_dog
-            .value_reader()
+            .reader()
             .map_reader(|p| p.weight_kg());
         assert_eq!(*dog_mapped_reader.value(), 4.5);
 
@@ -532,7 +687,7 @@ mod test {
 mod view_mode_example {
     use std::rc::{Rc, Weak};
 
-    use crate::{MapReader, Observable, ValueReader};
+    use crate::{MapReader, Observable, Reader};
 
     trait ViewModel {
         type Parent: ViewModel;
@@ -565,7 +720,7 @@ mod view_mode_example {
                 width: 100.0,
                 height: 200.0,
             });
-            let clip_box_reader = clip_box.value_reader();
+            let clip_box_reader = clip_box.reader();
             Rc::new_cyclic(move |weak| TopicSpace {
                 clip_box,
                 member: Member::new(weak.clone(), clip_box_reader),
@@ -588,26 +743,28 @@ mod view_mode_example {
     impl Member {
         pub fn new(
             parent: Weak<TopicSpace>,
-            ts_clip_box_reader: ValueReader<BoundingBox>,
+            ts_clip_box_reader: Reader<BoundingBox>,
         ) -> Rc<Member> {
-            let overrive_clip_box = Observable::new(None);
-            let overrive_clip_box_reader = overrive_clip_box.value_reader();
+            let override_clip_box = Observable::new(None);
 
-            let this = Member {
-                parent,
-                override_clip_box: overrive_clip_box,
-                clip_box: MapReader::new(move |ctx| {
-                    let ts_clip_box = ctx.track(&ts_clip_box_reader);
-                    let override_boundig_box = ctx.track(&overrive_clip_box_reader);
+            let clip_box = map_obs!(
+                |ts_clip_box: &BoundingBox, override_boundig_box: &Option<OverrideBoundingBox>| {
                     match override_boundig_box.as_ref() {
                         Some(override_bounding_box) => {
                             ts_clip_box.override_with(override_bounding_box)
                         }
                         None => ts_clip_box.clone(),
                     }
-                }),
-            };
-            Rc::new(this)
+                },
+                ts_clip_box_reader,
+                override_clip_box
+            );
+
+            Rc::new(Member {
+                parent,
+                override_clip_box,
+                clip_box,
+            })
         }
     }
 
