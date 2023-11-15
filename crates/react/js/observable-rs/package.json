@@ -1,6 +1,6 @@
 {
   "name": "observable-rs",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Bindings for observable-rs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,10 +23,10 @@
   },
   "homepage": "https://github.com/mindbeam/observable-rs#readme",
   "dependencies": {
-    "@types/react": "^17.0.2",
-    "react": "^17.0.1"
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0"
   },
   "devDependencies": {
-    "typescript": "^4.1.5"
+    "typescript": "^4.9.3"
   }
 }
