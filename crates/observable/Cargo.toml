@@ -1,10 +1,10 @@
 [package]
 name = "observable-rs"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Edvo Inc"]
 edition = "2018"
 license = "MIT/Apache-2.0"
-description="A general purpose observable library"
+description = "A general purpose observable library"
 
 categories = ["web-programming"]
 exclude = [".github", "rustfmt.toml"]
