@@ -1,5 +1,4 @@
 use std::cell::{Cell, Ref, RefCell};
-use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
 use crate::listener_set::Subscription;
@@ -51,6 +50,15 @@ impl<T> Observable<T> {
         T: Clone,
     {
         self.value.get().clone()
+    }
+}
+
+impl<T> Observable<T> {
+    pub fn on_updated(&self, cb: impl Fn() + 'static) -> Subscription {
+        self.listener_set.subscribe(cb)
+    }
+    pub fn force_notify(&self) {
+        self.listener_set.notify()
     }
 }
 
@@ -156,11 +164,15 @@ impl<T: 'static> Reader<T> {
         Some(sub)
     }
 }
-impl<T> Deref for Reader<T> {
-    type Target = WeakRef<ListenerSet>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.listener_set
+impl<T> Reader<T> {
+    pub fn on_updated(&self, cb: impl Fn() + 'static) -> Option<Subscription> {
+        let sub = self.listener_set.upgrade()?.subscribe(cb);
+        Some(sub)
+    }
+    pub fn force_notify(&self) {
+        if let Some(ls) = self.listener_set.upgrade() {
+            ls.notify()
+        }
     }
 }
 impl<T> Clone for Reader<T> {
@@ -181,32 +193,17 @@ impl<T> Clone for Reader<T> {
 pub struct MapReader<T> {
     value: Rc<Value<T>>,
     listener_set: UniqueRef<ListenerSet>,
-    #[allow(dead_code)]
-    downstreams: Vec<Subscription>,
     #[allow(dead_code, clippy::type_complexity)]
     closure: Rc<dyn Fn()>,
 }
 
-impl<T>
-    From<(
-        Rc<Value<T>>,
-        UniqueRef<ListenerSet>,
-        Vec<Subscription>,
-        Rc<dyn Fn()>,
-    )> for MapReader<T>
-{
+impl<T> From<(Rc<Value<T>>, UniqueRef<ListenerSet>, Rc<dyn Fn()>)> for MapReader<T> {
     fn from(
-        (value, listener_set, downstreams, closure): (
-            Rc<Value<T>>,
-            UniqueRef<ListenerSet>,
-            Vec<Subscription>,
-            Rc<dyn Fn()>,
-        ),
+        (value, listener_set, closure): (Rc<Value<T>>, UniqueRef<ListenerSet>, Rc<dyn Fn()>),
     ) -> Self {
         MapReader {
             value,
             listener_set,
-            downstreams,
             closure,
         }
     }
@@ -233,13 +230,20 @@ impl<T> MapReader<T> {
         self.listener_set.downgrade()
     }
 }
-
 impl<T: 'static> MapReader<T> {
     pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
         self.reader().subscribe(cb).unwrap()
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
         self.reader().once(cb).unwrap()
+    }
+}
+impl<T> MapReader<T> {
+    pub fn on_updated(&self, cb: impl Fn() + 'static) -> Subscription {
+        self.listener_set.subscribe(cb)
+    }
+    pub fn force_notify(&self) {
+        self.listener_set.notify()
     }
 }
 
@@ -297,21 +301,14 @@ macro_rules! map_obs {
             })
         };
         let weak_closure = Rc::downgrade(&closure);
-        let downstreams = listener_set_list
-            .into_iter()
-            .filter_map(|ls| {
-                let listener_set = ls.upgrade()?;
+        for ls in listener_set_list.into_iter() {
+            if let Some(listener_set) = ls.upgrade() {
                 let closure = weak_closure.clone();
-                let sub = listener_set.subscribe(move || {
-                    if let Some(closure) = closure.upgrade() {
-                        closure()
-                    }
-                });
-                Some(sub)
-            })
-            .collect();
+                listener_set.subscribe_weak(closure);
+            }
+        }
 
-        MapReader::from((value, listener_set, downstreams, closure,))
+        MapReader::from((value, listener_set, closure,))
     }};
 }
 
@@ -373,6 +370,11 @@ impl<T: 'static> DynMapReader<T> {
     }
     pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
         self.reader().once(cb).unwrap()
+    }
+}
+impl<T> DynMapReader<T> {
+    pub fn on_updated(&self, cb: impl Fn() + 'static) -> Subscription {
+        self.listener_set.subscribe(cb)
     }
 }
 
@@ -449,22 +451,6 @@ impl<T: 'static> DynMapReaderContext<T> {
                 listener_set.notify();
             }
         }
-    }
-}
-
-impl<T> From<&Observable<T>> for Reader<T> {
-    fn from(value: &Observable<T>) -> Self {
-        value.reader()
-    }
-}
-impl<T> From<&MapReader<T>> for Reader<T> {
-    fn from(value: &MapReader<T>) -> Self {
-        value.reader()
-    }
-}
-impl<T> From<&DynMapReader<T>> for Reader<T> {
-    fn from(value: &DynMapReader<T>) -> Self {
-        value.reader()
     }
 }
 
