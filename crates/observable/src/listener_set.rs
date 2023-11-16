@@ -21,15 +21,11 @@ impl ListenerSet {
 
     pub fn subscribe(&self, cb: impl Fn() + 'static) -> Subscription {
         let cb: Rc<dyn Fn()> = Rc::new(cb);
-        self.0
-            .borrow_mut()
-            .subscribe(Listener::Durable(Rc::downgrade(&cb)));
+        self.subscribe_weak(Rc::downgrade(&cb));
         Subscription::new(cb)
     }
     pub fn subscribe_rc(&self, cb: Rc<dyn Fn()>) -> Subscription {
-        self.0
-            .borrow_mut()
-            .subscribe(Listener::Durable(Rc::downgrade(&cb)));
+        self.subscribe_weak(Rc::downgrade(&cb));
         Subscription::new(cb)
     }
     pub fn once(&self, cb: impl FnOnce() + 'static) -> Subscription {
@@ -39,10 +35,17 @@ impl ListenerSet {
                 f();
             }
         });
-        self.0
-            .borrow_mut()
-            .subscribe(Listener::Once(Rc::downgrade(&cb)));
+        self.once_weak(Rc::downgrade(&cb));
         Subscription::new(cb)
+    }
+    pub fn subscribe_weak(&self, cb: Weak<dyn Fn()>) {
+        self.0.borrow_mut().subscribe(Listener::Durable(cb));
+    }
+    pub fn once_weak(&self, cb: Weak<dyn Fn()>) {
+        self.0.borrow_mut().subscribe(Listener::Once(cb));
+    }
+    pub fn unsubscribe(&self, cb: Weak<dyn Fn()>) {
+        self.0.borrow_mut().unsubscribe(cb);
     }
 }
 
@@ -76,6 +79,20 @@ impl Inner {
 
     pub fn subscribe(&mut self, listener: Listener) {
         self.items.push(listener);
+    }
+    pub fn unsubscribe(&mut self, cb: Weak<dyn Fn()>) {
+        let Some(cb) = cb.upgrade() else { return };
+        self.items.retain_mut(|item| {
+            let f = match &item {
+                Listener::Once(f) => f,
+                Listener::Durable(f) => f,
+            };
+            let Some(f) = f.upgrade() else {
+                return false;
+            };
+
+            Rc::ptr_eq(&f, &cb)
+        });
     }
 }
 
