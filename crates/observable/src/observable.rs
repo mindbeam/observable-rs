@@ -79,7 +79,7 @@ impl<T: 'static> Observable<T> {
     pub fn map_reader<R: Clone + 'static>(
         &self,
         f: impl Fn(&T) -> Reader<R> + 'static,
-    ) -> DynMapReader<R> {
+    ) -> MapReader<R> {
         self.reader().map_reader(f)
     }
 }
@@ -116,8 +116,8 @@ impl<T: 'static> Reader<T> {
     pub fn map_reader<R: Clone + 'static>(
         self,
         f: impl Fn(&T) -> Reader<R> + 'static,
-    ) -> DynMapReader<R> {
-        DynMapReader::new(move |ctx| {
+    ) -> MapReader<R> {
+        MapReader::new_dyn(move |ctx| {
             let t = ctx.track(&self);
             let r_reader = f(&t);
             let r_val = ctx.track(&r_reader);
@@ -208,7 +208,6 @@ impl<T> From<(Rc<Value<T>>, UniqueRef<ListenerSet>, Rc<dyn Fn()>)> for MapReader
         }
     }
 }
-
 impl<T> MapReader<T> {
     pub fn value(&self) -> Ref<T> {
         self.value.get()
@@ -244,6 +243,35 @@ impl<T> MapReader<T> {
     }
     pub fn force_notify(&self) {
         self.listener_set.notify()
+    }
+}
+impl<T: 'static> MapReader<T> {
+    pub fn new_dyn(f: impl Fn(&DynMapReaderContext<T>) -> T + 'static) -> Self {
+        let listener_set: UniqueRef<ListenerSet> = UniqueRef::default();
+        let closure: Rc<DynMapReaderClosure<T>> = Rc::new(f);
+        let downstreams = Rc::default();
+
+        let value = Rc::new_cyclic(|weak| {
+            let ctx = DynMapReaderContext {
+                index: Cell::new(0),
+                value: weak.clone(),
+                my_ls: listener_set.downgrade(),
+                downstreams: Rc::downgrade(&downstreams),
+                closure: Rc::downgrade(&closure),
+            };
+
+            let first_value = closure(&ctx);
+            Value::new(first_value)
+        });
+
+        MapReader {
+            value,
+            listener_set,
+            closure: Rc::new(move || {
+                #[allow(clippy::unnecessary_operation)]
+                (&downstreams, &closure);
+            }),
+        }
     }
 }
 
@@ -312,77 +340,13 @@ macro_rules! map_obs {
     }};
 }
 
-pub struct DynMapReader<T> {
-    value: Rc<Value<T>>,
-    listener_set: UniqueRef<ListenerSet>,
-    #[allow(dead_code)]
-    downstreams: Rc<Downstreams>,
-    #[allow(dead_code)]
-    closure: Rc<DynMapReaderClosure<T>>,
-}
 type Downstreams = RefCell<Vec<(WeakRef<ListenerSet>, Option<Subscription>)>>;
-
-impl<T> DynMapReader<T> {
-    pub fn new(f: impl Fn(&DynMapReaderContext<T>) -> T + 'static) -> Self {
-        let listener_set: UniqueRef<ListenerSet> = UniqueRef::default();
-        let closure: Rc<DynMapReaderClosure<T>> = Rc::new(f);
-        let downstreams = Rc::default();
-
-        let value = Rc::new_cyclic(|weak| {
-            let ctx = DynMapReaderContext {
-                index: Cell::new(0),
-                value: weak.clone(),
-                my_reader: listener_set.downgrade(),
-                downstreams: Rc::downgrade(&downstreams),
-                closure: Rc::downgrade(&closure),
-            };
-
-            let first_value = closure(&ctx);
-            Value::new(first_value)
-        });
-
-        DynMapReader {
-            value,
-            listener_set,
-            downstreams,
-            closure,
-        }
-    }
-    pub fn reader(&self) -> Reader<T> {
-        Reader {
-            value: self.value.clone(),
-            listener_set: self.listener_set.downgrade(),
-        }
-    }
-    pub fn value(&self) -> Ref<T> {
-        self.value.get()
-    }
-    pub fn value_cloned(&self) -> T
-    where
-        T: Clone,
-    {
-        self.value.get().clone()
-    }
-}
-impl<T: 'static> DynMapReader<T> {
-    pub fn subscribe(&self, cb: impl Fn(&T) + 'static) -> Subscription {
-        self.reader().subscribe(cb).unwrap()
-    }
-    pub fn once(&self, cb: impl FnOnce(&T) + 'static) -> Subscription {
-        self.reader().once(cb).unwrap()
-    }
-}
-impl<T> DynMapReader<T> {
-    pub fn on_updated(&self, cb: impl Fn() + 'static) -> Subscription {
-        self.listener_set.subscribe(cb)
-    }
-}
 
 type DynMapReaderClosure<T> = dyn Fn(&DynMapReaderContext<T>) -> T;
 pub struct DynMapReaderContext<T> {
     index: Cell<usize>,
     value: Weak<Value<T>>,
-    my_reader: WeakRef<ListenerSet>,
+    my_ls: WeakRef<ListenerSet>,
     downstreams: Weak<Downstreams>,
     closure: Weak<DynMapReaderClosure<T>>,
 }
@@ -432,7 +396,7 @@ impl<T: 'static> DynMapReaderContext<T> {
         let ctx = DynMapReaderContext {
             index: Cell::new(0),
             value: self.value.clone(),
-            my_reader: self.my_reader.clone(),
+            my_ls: self.my_ls.clone(),
             downstreams: self.downstreams.clone(),
             closure: self.closure.clone(),
         };
@@ -444,7 +408,7 @@ impl<T: 'static> DynMapReaderContext<T> {
                 return;
             };
 
-            if let Some(listener_set) = ctx.my_reader.upgrade() {
+            if let Some(listener_set) = ctx.my_ls.upgrade() {
                 let new_val = f(&ctx);
                 ctx.clear_unused_readers();
                 value.set(new_val);
