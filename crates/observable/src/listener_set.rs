@@ -19,18 +19,14 @@ impl ListenerSet {
         self.0.borrow_mut().working_set()
     }
 
-    pub fn subscribe(&self, cb: impl Fn() + 'static) -> Subscription {
-        let cb: Rc<dyn Fn()> = Rc::new(cb);
-        self.subscribe_weak(Rc::downgrade(&cb));
-        Subscription::new(cb)
-    }
-    pub fn subscribe_rc(&self, cb: Rc<dyn Fn()>) -> Subscription {
+    pub fn subscribe(&self, cb: impl Dispatch + 'static) -> Subscription {
+        let cb: Rc<dyn Dispatch> = Rc::new(cb);
         self.subscribe_weak(Rc::downgrade(&cb));
         Subscription::new(cb)
     }
     pub fn once(&self, cb: impl FnOnce() + 'static) -> Subscription {
         let cb = RefCell::new(Some(cb));
-        let cb: Rc<dyn Fn()> = Rc::new(move || {
+        let cb: Rc<dyn Dispatch> = Rc::new(move || {
             if let Some(f) = cb.take() {
                 f();
             }
@@ -38,13 +34,13 @@ impl ListenerSet {
         self.once_weak(Rc::downgrade(&cb));
         Subscription::new(cb)
     }
-    pub fn subscribe_weak(&self, cb: Weak<dyn Fn()>) {
+    pub fn subscribe_weak(&self, cb: Weak<dyn Dispatch>) {
         self.0.borrow_mut().subscribe(Listener::Durable(cb));
     }
-    pub fn once_weak(&self, cb: Weak<dyn Fn()>) {
+    pub fn once_weak(&self, cb: Weak<dyn Dispatch>) {
         self.0.borrow_mut().subscribe(Listener::Once(cb));
     }
-    pub fn unsubscribe(&self, cb: Weak<dyn Fn()>) {
+    pub fn unsubscribe(&self, cb: Weak<dyn Dispatch>) {
         self.0.borrow_mut().unsubscribe(cb);
     }
 }
@@ -60,7 +56,7 @@ impl Inner {
         // so we need to make a copy of the listeners vec so we're not mutating it while calling listener functions
         let mut working_set: Vec<WorkingItem> = Vec::new();
 
-        self.items.retain_mut(|item| match &item {
+        self.items.retain(|item| match item {
             Listener::Once(f) => {
                 working_set.push(f.clone());
                 false
@@ -77,10 +73,10 @@ impl Inner {
         WorkingSet::new(working_set)
     }
 
-    pub fn subscribe(&mut self, listener: Listener) {
+    fn subscribe(&mut self, listener: Listener) {
         self.items.push(listener);
     }
-    pub fn unsubscribe(&mut self, cb: Weak<dyn Fn()>) {
+    fn unsubscribe(&mut self, cb: Weak<dyn Dispatch>) {
         let Some(cb) = cb.upgrade() else { return };
         self.items.retain_mut(|item| {
             let f = match &item {
@@ -98,11 +94,11 @@ impl Inner {
 
 // Reader needs to keep this alive. That's basically it
 enum Listener {
-    Once(Weak<dyn Fn()>),
-    Durable(Weak<dyn Fn()>),
+    Once(Weak<dyn Dispatch>),
+    Durable(Weak<dyn Dispatch>),
 }
 
-pub type WorkingItem = Weak<dyn Fn()>;
+pub type WorkingItem = Weak<dyn Dispatch>;
 
 pub struct WorkingSet {
     items: Vec<WorkingItem>,
@@ -117,7 +113,7 @@ impl WorkingSet {
     pub(crate) fn notify(self) {
         for item in self.items {
             if let Some(f) = item.upgrade() {
-                f()
+                f.dispatch()
             }
         }
     }
@@ -125,10 +121,19 @@ impl WorkingSet {
 
 pub struct Subscription {
     #[allow(dead_code)]
-    cb: Rc<dyn Fn()>,
+    cb: Rc<dyn Dispatch>,
 }
 impl Subscription {
-    pub fn new(cb: Rc<dyn Fn()>) -> Self {
+    pub fn new(cb: Rc<dyn Dispatch>) -> Self {
         Self { cb }
+    }
+}
+
+pub trait Dispatch {
+    fn dispatch(&self);
+}
+impl<Out, F: Fn() -> Out> Dispatch for F {
+    fn dispatch(&self) {
+        self();
     }
 }
